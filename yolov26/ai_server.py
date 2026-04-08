@@ -4,14 +4,25 @@ import subprocess
 import threading
 import time
 import requests
+import datetime
+import sys
 from ultralytics import YOLO
+
+# ====== 🔴 新增：设置 OpenCV 的网络流超时时间，防止 RTSP 拉流卡死 30 秒 ======
+os.environ["OPENCV_FFMPEG_READ_TIMEOUT"] = "5000"  # 限制读取超时为 5 秒
+# ========================================================================
 
 print("正在加载 YOLO 模型到显卡...")
 model = YOLO('yolo26n.pt') 
 
+
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SNAPSHOT_DIR = os.path.join(BASE_DIR, 'snapshots')
 os.makedirs(SNAPSHOT_DIR, exist_ok=True)
+
+RECORD_DIR = os.path.join(BASE_DIR, 'records')
+os.makedirs(RECORD_DIR, exist_ok=True)
 
 # ================= 🚨 新增：AI 专属安全通行证模块 =================
 API_TOKEN = ""
@@ -34,6 +45,24 @@ def ai_login():
 def get_auth_headers():
     """生成带有通行证的请求头"""
     return {"Authorization": f"Bearer {API_TOKEN}"}
+
+# ================= 🚨 新增：遗留文件自愈修复模块 =================
+def fix_leftover_recording_files():
+    """服务启动时，遍历并修复上次意外中断（断电、强杀等）留下的 _recording.mp4 文件残骸"""
+    for root, dirs, files in os.walk(RECORD_DIR):
+        for f in files:
+            if f.endswith('_recording.mp4'):
+                old_path = os.path.join(root, f)
+                try:
+                    # 读取该文件最后写入的时间，作为视频实际录制结束时间
+                    mtime = os.path.getmtime(old_path)
+                    end_str = datetime.datetime.fromtimestamp(mtime).strftime("%H-%M-%S")
+                    start_str = f.replace('_recording.mp4', '')
+                    new_path = os.path.join(root, f"{start_str}_到_{end_str}.mp4")
+                    os.rename(old_path, new_path)
+                    print(f"🔧 已修复意外中断的录像碎片: {f} -> 闭环为 {os.path.basename(new_path)}")
+                except Exception as e:
+                    pass
 # ===============================================================
 
 def report_status(cam_id, status):
@@ -58,13 +87,14 @@ def process_video_stream(cam_id, cam_name, input_source, output_rtsp, stop_event
         
         if not cap.isOpened():
             print(f"❌ [{cam_name}] 连接失败，5秒后重试...")
-            time.sleep(5)
+            stop_event.wait(5)
             continue
             
         report_status(cam_id, "online")
         
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  
-        width, height = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         fps = int(cap.get(cv2.CAP_PROP_FPS)) or 30
 
         command = [
@@ -129,6 +159,35 @@ def process_video_stream(cam_id, cam_name, input_source, output_rtsp, stop_event
                         print(f"✅ [{cam_name}] 人员已离开，重新布防。")
 
                 annotated_frame_for_stream = r.plot()
+                
+                # ====== 🔴 恢复：无损原生画质与高保真比例时间水印 ======
+                frame_h, frame_w = annotated_frame_for_stream.shape[:2]
+                scale_ratio = max(0.4, frame_w / 1920.0) 
+                
+                font_scale = 1.0 * scale_ratio
+                thickness = max(1, int(round(2.0 * scale_ratio)))
+                
+                current_time_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                (text_w, text_h), baseline = cv2.getTextSize(current_time_str, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
+                
+                padding = int(15 * scale_ratio)
+                text_x = int(30 * scale_ratio)
+                text_y = int(45 * scale_ratio) + text_h 
+                
+                x1, y1 = max(0, text_x - padding), max(0, text_y - text_h - padding)
+                x2, y2 = min(frame_w, text_x + text_w + padding), min(frame_h, text_y + int(baseline) + padding)
+                
+                # 仅截取文字区域 (ROI) 将其原位加深，不污染全局画质
+                if y2 > y1 and x2 > x1:
+                    roi = annotated_frame_for_stream[y1:y2, x1:x2]
+                    darkened = cv2.addWeighted(roi, 0.5, roi, 0, 0)
+                    annotated_frame_for_stream[y1:y2, x1:x2] = darkened
+                
+                # 写入纯白抗锯齿时间文字
+                cv2.putText(annotated_frame_for_stream, current_time_str, (text_x, text_y), 
+                            cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
+                # ====================================================
+
                 try:
                     process.stdin.write(annotated_frame_for_stream.tobytes())
                 except Exception:
@@ -139,10 +198,90 @@ def process_video_stream(cam_id, cam_name, input_source, output_rtsp, stop_event
                 break 
 
         cap.release()
-        if process.stdin: process.stdin.close()
-        if process.poll() is None: process.terminate()
-        process.wait()
-        time.sleep(3) 
+        if 'process' in locals() and process:
+            if process.stdin: 
+                try: process.stdin.close()
+                except: pass
+            if process.poll() is None: 
+                process.terminate()
+            try: process.wait(timeout=2)
+            except: process.kill()
+        
+        # 🔴 新增：当内部流循环异常断开时，先短暂休眠，避免死循环爆CPU或刷屏
+        if not stop_event.is_set():
+            print(f"⚠️ [{cam_name}] 视频流异常断开或推流失败，将于 5 秒后尝试重启...")
+            stop_event.wait(5)
+
+
+def start_recording(cam_id, rtsp_url, stop_event):
+    """旁路录像线程：通过 Python 循环控制，录制带有起止时间命名、长度固定的标准 MP4 文件"""
+    cam_record_dir = os.path.join(RECORD_DIR, str(cam_id))
+    os.makedirs(cam_record_dir, exist_ok=True)
+    
+    time.sleep(8)  # 延迟等待 RTSP 主流成功推流后再拉流录制
+    
+    while not stop_event.is_set():
+        # 获取开始时间
+        start_time = datetime.datetime.now()
+        start_str = start_time.strftime("%Y-%m-%d_%H-%M-%S")
+        
+        # 正在录制时的临时文件名
+        temp_file = os.path.join(cam_record_dir, f"{start_str}_recording.mp4")
+        
+        cmd = [
+            'ffmpeg', '-y', 
+            '-rtsp_transport', 'tcp',
+            '-timeout', '10000000', # 修复：在 Windows 最新版 FFmpeg 下使用 -timeout 而非 -stimeout
+            '-i', rtsp_url,
+            '-c:v', 'copy', 
+            '-t', '600',
+            '-movflags', 'frag_keyframe+empty_moov', 
+            temp_file
+        ]
+        
+        process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        
+        # 持续监控录制进程，直到自然结束（10分钟）或被打断
+        while process.poll() is None:
+            if stop_event.is_set():
+                try:
+                    process.stdin.write(b'q\n')
+                    process.stdin.flush()
+                    process.wait(timeout=5)
+                except Exception:
+                    process.terminate()
+                break
+            time.sleep(2)
+            
+        # 当这段录像结束（或被停止），生成结束时间，并重命名闭环该切片
+        end_time = datetime.datetime.now()
+        end_str = end_time.strftime("%H-%M-%S")
+        final_file = os.path.join(cam_record_dir, f"{start_str}_到_{end_str}.mp4")
+        
+        if os.path.exists(temp_file):
+            try:
+                os.rename(temp_file, final_file)
+            except Exception:
+                pass
+
+
+def cleanup_old_records():
+    """定期清理超过 15 天的录像"""
+    while True:
+        if os.path.exists(RECORD_DIR):
+            now = time.time()
+            for root, dirs, files in os.walk(RECORD_DIR):
+                for f in files:
+                    if f.endswith('.mp4'):
+                        file_path = os.path.join(root, f)
+                        # 判断文件最后修改时间是否超过 15 天 (15 * 86400 秒)
+                        if os.stat(file_path).st_mtime < now - 15 * 86400:
+                            try:
+                                os.remove(file_path)
+                                print(f"🧹 已清理 15 天前的过期录像: {f}")
+                            except Exception:
+                                pass
+        time.sleep(3600)  # 每小时检查一次
 
 def get_cameras_from_api():
     try:
@@ -158,12 +297,17 @@ def get_cameras_from_api():
         pass
     return []
 
+
 if __name__ == '__main__':
     active_threads = {}
-    
-    # 🚨 脚本启动的第一步：先登录！
     ai_login()
     
+    # 启动前自愈修复之前的意外中断遗留视频
+    fix_leftover_recording_files()
+
+    # 开启后台清理线程 (自动清理15天前的录像)
+    threading.Thread(target=cleanup_old_records, daemon=True).start()
+
     print("🔄 开始动态监听 API 配置中心...")
     try:
         while True:
@@ -171,25 +315,57 @@ if __name__ == '__main__':
             current_ids = [c['id'] for c in cams]
 
             for cam in cams:
-                if cam['id'] not in active_threads:
+                cam_id = cam['id']
+                
+                # 🔴 新增：监测流地址是否在后台被修改了，如果被修改立刻中断旧连接
+                if cam_id in active_threads:
+                    t_main, t_rec, old_stop_event, old_source = active_threads[cam_id]
+                    if old_source != cam['input_source']:
+                        print(f"🔄 检测到 [{cam['name']}] 源地址已被修改，正在重启连接...")
+                        report_status(cam_id, "offline")
+                        old_stop_event.set()
+                        t_main.join(timeout=2)
+                        t_rec.join(timeout=2)
+                        del active_threads[cam_id]
+
+                if cam_id not in active_threads:
                     stop_event = threading.Event()
                     output_rtsp = f"rtsp://127.0.0.1:8554/{cam['stream_path']}"
-                    t = threading.Thread(target=process_video_stream, args=(cam['id'], cam['name'], cam['input_source'], output_rtsp, stop_event))
-                    t.start()
-                    active_threads[cam['id']] = (t, stop_event)
+
+                    # 启动 AI 分析推流主线程 (加 daemon=True 支持快速强杀)
+                    t_main = threading.Thread(target=process_video_stream,
+                                              args=(cam_id, cam['name'], cam['input_source'], output_rtsp, stop_event),
+                                              daemon=True)
+                    t_main.start()
+
+                    # 启动录制旁路线程 (加 daemon=True 支持快速强杀)
+                    t_rec = threading.Thread(target=start_recording, args=(cam_id, output_rtsp, stop_event), daemon=True)
+                    t_rec.start()
+
+                    # 将 input_source 也记录下来，用于后续的修改比对
+                    active_threads[cam_id] = (t_main, t_rec, stop_event, cam['input_source'])
 
             for cam_id in list(active_threads.keys()):
                 if cam_id not in current_ids:
                     report_status(cam_id, "offline")
-                    thread, stop_event = active_threads[cam_id]
+                    t_main, t_rec, stop_event, _ = active_threads[cam_id]
                     stop_event.set()
+                    t_main.join()
+                    t_rec.join()
                     del active_threads[cam_id]
 
-            time.sleep(3) 
-            
+            time.sleep(3)
+
     except KeyboardInterrupt:
-        print("\n⚠️ 收到退出信号，安全关闭所有摄像头...")
-        for cam_id, (thread, stop_event) in active_threads.items():
+        print("\n⚠️ 收到退出信号，正在快速强杀所有连线...")
+        for cam_id, (t_main, t_rec, stop_event, _) in active_threads.items():
             report_status(cam_id, "offline")
             stop_event.set()
-            thread.join()
+        
+        # 仅等待最多 1 秒，若仍卡死则暴力退出结束，系统会自动回收 FFmpeg 进程
+        for cam_id, (t_main, t_rec, stop_event, _) in active_threads.items():
+            t_main.join(timeout=1.0)
+            t_rec.join(timeout=1.0)
+            
+        print("✅ 监控服务已全部退出！")
+        sys.exit(0)

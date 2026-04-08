@@ -11,6 +11,7 @@ from passlib.context import CryptContext
 from jose import JWTError, jwt
 from datetime import datetime, timedelta
 import uvicorn
+from typing import List
 
 # ================= 配置区 =================
 DB_CONFIG = {
@@ -42,7 +43,13 @@ app.add_middleware(
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SNAPSHOT_DIR = os.path.join(BASE_DIR, 'snapshots')
 os.makedirs(SNAPSHOT_DIR, exist_ok=True)
+# 原有的 snapshots
 app.mount("/snapshots", StaticFiles(directory=SNAPSHOT_DIR), name="snapshots")
+
+# 新增 records
+RECORD_DIR = os.path.join(BASE_DIR, 'records')
+os.makedirs(RECORD_DIR, exist_ok=True)
+app.mount("/records", StaticFiles(directory=RECORD_DIR), name="records")
 
 # ======= 🛡️ 密码加密与 JWT 验证基础 =======
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -85,17 +92,7 @@ def init_db():
                 role VARCHAR(20) NOT NULL
             )
         ''')
-        
-        # 🚨 初始化默认账号 (如果不存在的话)
-        # 网页管理员账号: admin / 密码: admin123
-        # cursor.execute("SELECT id FROM users WHERE username = 'admin'")
-        # if not cursor.fetchone():
-        #     cursor.execute("INSERT INTO users (username, password_hash, role) VALUES (%s, %s, %s)", ('admin', get_password_hash('admin123'), 'admin'))
-        
-        # # AI 脚本专用后台账号: ai_worker / 密码: ai_pass666
-        # cursor.execute("SELECT id FROM users WHERE username = 'ai_worker'")
-        # if not cursor.fetchone():
-        #     cursor.execute("INSERT INTO users (username, password_hash, role) VALUES (%s, %s, %s)", ('ai_worker', get_password_hash('ai_pass666'), 'service'))
+
     conn.close()
 
 init_db()
@@ -184,6 +181,22 @@ def update_camera_status(cam_id: int, stat: CameraStatus, current_user: dict = D
     conn = get_db(); cursor = conn.cursor(); cursor.execute("UPDATE cameras SET status=%s WHERE id=%s", (stat.status, cam_id)); conn.commit(); conn.close()
     return {"status": "success"}
 
+
+@app.get("/api/cameras/{cam_id}/records")
+def get_camera_records(cam_id: int, current_user: dict = Depends(get_current_user)):
+    cam_dir = os.path.join(RECORD_DIR, str(cam_id))
+    if not os.path.exists(cam_dir):
+        return []
+
+    files = os.listdir(cam_dir)
+    # 取消过滤，把包含 _recording.mp4 的切片也一并返回给前端，允许用户看最近录制未完成的片段
+    mp4_files = sorted([f for f in files if f.endswith('.mp4')], reverse=True)
+
+    return [
+        {"filename": f, "url": f"http://127.0.0.1:8000/records/{cam_id}/{f}"}
+        for f in mp4_files
+    ]
+
 @app.post("/api/alerts")
 def add_alert(alert: Alert, current_user: dict = Depends(get_current_user)):
     conn = get_db(); cursor = conn.cursor(); cursor.execute("INSERT INTO alerts (cam_name, alert_type, image_filename) VALUES (%s, %s, %s)", (alert.cam_name, alert.alert_type, alert.image_filename)); conn.commit(); conn.close()
@@ -195,6 +208,42 @@ def get_alerts(current_user: dict = Depends(get_current_user)):
     for alert in alerts: alert['timestamp'] = alert['timestamp'].strftime("%Y-%m-%d %H:%M:%S")
     conn.close()
     return alerts
+
+
+class DeleteAlertsRequest(BaseModel):
+    alert_ids: List[int]
+
+
+@app.delete("/api/alerts")
+def delete_alerts(req: DeleteAlertsRequest, current_user: dict = Depends(get_current_user)):
+    if not req.alert_ids:
+        return {"status": "success"}
+
+    conn = get_db()
+    cursor = conn.cursor()
+
+    # 防止 SQL 注入，构造格式化字符串
+    format_strings = ','.join(['%s'] * len(req.alert_ids))
+
+    # 1. 先查出所有要删除的文件名，用于删除硬盘上的图片
+    cursor.execute(f"SELECT image_filename FROM alerts WHERE id IN ({format_strings})", tuple(req.alert_ids))
+    alerts_to_delete = cursor.fetchall()
+
+    for alert in alerts_to_delete:
+        file_path = os.path.join(SNAPSHOT_DIR, alert['image_filename'])
+        if os.path.exists(file_path):
+            try:
+                os.remove(file_path)  # 删除物理图片
+            except Exception as e:
+                pass
+
+    # 2. 从数据库删除记录
+    cursor.execute(f"DELETE FROM alerts WHERE id IN ({format_strings})", tuple(req.alert_ids))
+    conn.commit()
+    conn.close()
+
+    return {"status": "success", "deleted_count": len(req.alert_ids)}
+
 
 if __name__ == '__main__':
     print("🚀 企业级 API 服务器 (含JWT鉴权) 启动: http://127.0.0.1:8000")

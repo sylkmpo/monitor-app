@@ -1,7 +1,10 @@
 snapshots/
+records/
 # 依赖包 (绝对不能提交，体积太大，其他人 pull 后自己 npm install 即可)
 node_modules/
 
 # 打包构建后的静态资源输出目录
 dist/
 dist-ssr/
+.idea
+.vscode
