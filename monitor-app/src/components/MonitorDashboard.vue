@@ -1,9 +1,13 @@
 <template>
   <div class="monitor-dashboard">
     <header class="header">
-      <h1>📹 智能监控多画面看板 (WebRTC 高清版)</h1>
+      <h1>📹 监控画面看板</h1>
       <div class="time-display">{{ currentTime }}</div>
     </header>
+
+    <div v-if="cameras.length === 0" class="no-signal" style="position: relative; text-align: center; margin-top: 50px;">
+      正在加载摄像头数据或暂无设备，请去左侧【摄像头管理】添加...
+    </div>
 
     <div class="video-grid">
       <div class="card" v-for="cam in cameras" :key="cam.id">
@@ -32,97 +36,64 @@
 
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue';
+import axios from 'axios';
 
 const currentTime = ref('');
-let timer = null;
+let timeTimer = null;
+let camTimer = null; // 新增一个摄像头刷新定时器
+const cameras = ref([]);
 
-// 🚀 绝杀改动：直接填写 WebRTC 的 HTTP 地址
-// 注意：确保 192.168.237.222 是运行着 MediaMTX 服务器的那台电脑的 IP
-const cameras = ref([
-  { 
-    id: 'cam1', 
-    name: 'USB AI 智能监控', 
-    // 端口改为 8889 (MediaMTX 默认 WebRTC 端口)，直接填流名称 ai_cam1
-    url: 'http://192.168.237.222:8889/ai_cam1', 
-    status: 'connected' 
-  },
-  { 
-    id: 'cam2', 
-    name: '大门监控', 
-    url: 'http://192.168.237.222:8889/ai_cam2',
-    status: 'disconnected' 
-  },
-  { 
-    id: 'cam3', 
-    name: '地下车库 A 区', 
-    url: '', 
-    status: 'disconnected' 
-  },
-  { 
-    id: 'cam4', 
-    name: '内部机房走廊', 
-    url: '', 
-    status: 'disconnected' 
+const WEBRTC_BASE_URL = 'http://127.0.0.1:8889/';
+
+const fetchCameras = async () => {
+  try {
+    const res = await axios.get('http://127.0.0.1:8000/api/cameras');
+    cameras.value = res.data.map(cam => ({
+      id: cam.id,
+      name: cam.name,
+      url: `${WEBRTC_BASE_URL}${cam.stream_path}/`, 
+      // 🚨 核心修改：读取真实状态，如果没有则是离线
+      status: cam.status === 'online' ? 'connected' : 'disconnected'
+    }));
+  } catch (error) {
+    console.error("无法获取摄像头列表", error);
   }
-]);
-
-// 时钟更新逻辑
-const updateTime = () => {
-  const now = new Date();
-  currentTime.value = now.getFullYear() + '-' + 
-    String(now.getMonth() + 1).padStart(2, '0') + '-' + 
-    String(now.getDate()).padStart(2, '0') + ' ' + 
-    String(now.getHours()).padStart(2, '0') + ':' + 
-    String(now.getMinutes()).padStart(2, '0') + ':' + 
-    String(now.getSeconds()).padStart(2, '0');
 };
 
-// 组件挂载
+const updateTime = () => {
+  const now = new Date();
+  currentTime.value = now.toLocaleString('zh-CN', { hour12: false });
+};
+
 onMounted(() => {
   updateTime();
-  timer = setInterval(updateTime, 1000);
-  // 🧹 这里删除了所有 jsmpeg 的复杂连接代码，全靠 iframe 搞定！
+  timeTimer = setInterval(updateTime, 1000);
+  
+  fetchCameras(); // 初次获取
+  camTimer = setInterval(fetchCameras, 5000); // 🚨 每5秒自动同步一次最新状态
 });
 
 onUnmounted(() => {
-  if (timer) clearInterval(timer);
+  if (timeTimer) clearInterval(timeTimer);
+  if (camTimer) clearInterval(camTimer);
 });
 </script>
 
 <style scoped>
-.monitor-dashboard {
-  --bg-dark: #0f1015;
-  --card-bg: #1c1d26;
-  --text-main: #ffffff;
-  --text-sub: #8a8d98;
-  --border-color: #2d2f3d;
-  --success: #10b981;
-  --error: #ef4444;
-
-  background-color: var(--bg-dark);
-  color: var(--text-main);
-  font-family: 'Segoe UI', system-ui, sans-serif;
-  min-height: 100vh;
-  padding: 24px;
-  box-sizing: border-box;
-}
-
+.monitor-dashboard { padding: 24px; box-sizing: border-box; }
 .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; padding-bottom: 16px; border-bottom: 1px solid var(--border-color); }
-.header h1 { margin: 0; font-size: 24px; font-weight: 600; letter-spacing: 1px; }
-.time-display { font-size: 16px; color: var(--text-sub); font-variant-numeric: tabular-nums; }
-
-.video-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(450px, 1fr)); gap: 24px; }
-.card { background-color: var(--card-bg); border: 1px solid var(--border-color); border-radius: 12px; overflow: hidden; box-shadow: 0 10px 20px rgba(0, 0, 0, 0.2); transition: transform 0.2s; }
-.card:hover { border-color: #4b4d63; }
-.card-header { padding: 12px 20px; display: flex; justify-content: space-between; align-items: center; background-color: rgba(255, 255, 255, 0.02); border-bottom: 1px solid var(--border-color); }
-.cam-name { font-size: 15px; font-weight: 500; }
-.status-badge { display: flex; align-items: center; font-size: 13px; color: var(--text-sub); }
+.header h1 { margin: 0; font-size: 24px; font-weight: 600; letter-spacing: 1px; color: var(--text-main); }
+.time-display { font-size: 16px; color: var(--text-sub); font-variant-numeric: tabular-nums; font-weight: 500; }
+.video-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+@media (max-width: 1000px) { .video-grid { grid-template-columns: 1fr; } }
+.card { background-color: var(--bg-card); border: 1px solid var(--border-color); border-radius: 12px; overflow: hidden; box-shadow: var(--shadow); transition: 0.3s; }
+.card-header { padding: 12px 20px; display: flex; justify-content: space-between; align-items: center; background-color: var(--hover-bg); border-bottom: 1px solid var(--border-color); }
+.cam-name { font-size: 15px; font-weight: bold; color: var(--text-main); }
+.status-badge { display: flex; align-items: center; font-size: 13px; color: var(--text-sub); font-weight: 500;}
 .dot { width: 8px; height: 8px; border-radius: 50%; margin-right: 8px; }
-.dot.connected { background-color: var(--success); box-shadow: 0 0 8px var(--success); }
-.dot.disconnected { background-color: var(--error); box-shadow: 0 0 8px var(--error); }
-
+.dot.connected { background-color: var(--success); box-shadow: 0 0 8px rgba(16, 185, 129, 0.4); }
+.dot.disconnected { background-color: var(--danger); box-shadow: 0 0 8px rgba(239, 68, 68, 0.4); }
 .video-container { width: 100%; aspect-ratio: 16 / 9; background-color: #000; position: relative; }
-/* 🚀 绝杀改动：确保 iframe 铺满且去边框 */
 .video-container iframe { width: 100%; height: 100%; border: none; display: block; }
-.no-signal { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: #555; font-size: 14px; letter-spacing: 2px; }
+.no-signal { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: var(--text-muted); font-size: 14px; letter-spacing: 2px; }
 </style>

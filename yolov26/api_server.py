@@ -1,0 +1,201 @@
+import os
+import time
+import pymysql
+from pymysql.cursors import DictCursor
+from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from pydantic import BaseModel
+from passlib.context import CryptContext
+from jose import JWTError, jwt
+from datetime import datetime, timedelta
+import uvicorn
+
+# ================= 配置区 =================
+DB_CONFIG = {
+    'host': '127.0.0.1',
+    'port': 3306,
+    'user': 'root',
+    'password': '123456',  # 你的数据库密码
+    'charset': 'utf8mb4',
+    'cursorclass': DictCursor,
+    'autocommit': True
+}
+DB_NAME = 'monitor_db'
+
+# 🚨 企业级 JWT 密钥配置 (请勿泄露)
+SECRET_KEY = "Your-Super-Secret-Enterprise-Key-Never-Leak"
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 # Token 过期时间: 1天
+# ==========================================
+
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+SNAPSHOT_DIR = os.path.join(BASE_DIR, 'snapshots')
+os.makedirs(SNAPSHOT_DIR, exist_ok=True)
+app.mount("/snapshots", StaticFiles(directory=SNAPSHOT_DIR), name="snapshots")
+
+# ======= 🛡️ 密码加密与 JWT 验证基础 =======
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/login")
+
+def verify_password(plain_password, hashed_password):
+    return pwd_context.verify(plain_password, hashed_password)
+
+def get_password_hash(password):
+    return pwd_context.hash(password)
+
+def create_access_token(data: dict):
+    to_encode = data.copy()
+    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+def get_db():
+    config = DB_CONFIG.copy()
+    config['database'] = DB_NAME
+    return pymysql.connect(**config)
+
+def init_db():
+    conn = pymysql.connect(host=DB_CONFIG['host'], port=DB_CONFIG['port'], 
+                           user=DB_CONFIG['user'], password=DB_CONFIG['password'])
+    conn.cursor().execute(f"CREATE DATABASE IF NOT EXISTS {DB_NAME} DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
+    conn.close()
+
+    conn = get_db()
+    with conn.cursor() as cursor:
+        cursor.execute('''CREATE TABLE IF NOT EXISTS cameras (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(255) NOT NULL, model VARCHAR(255), input_source VARCHAR(255) NOT NULL, stream_path VARCHAR(255) NOT NULL, status VARCHAR(50) DEFAULT 'offline')''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS alerts (id INT AUTO_INCREMENT PRIMARY KEY, cam_name VARCHAR(255) NOT NULL, alert_type VARCHAR(255) NOT NULL, image_filename VARCHAR(255) NOT NULL, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)''')
+        
+        # 🚨 新增：企业用户表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                id INT AUTO_INCREMENT PRIMARY KEY, 
+                username VARCHAR(50) UNIQUE NOT NULL, 
+                password_hash VARCHAR(255) NOT NULL, 
+                role VARCHAR(20) NOT NULL
+            )
+        ''')
+        
+        # 🚨 初始化默认账号 (如果不存在的话)
+        # 网页管理员账号: admin / 密码: admin123
+        # cursor.execute("SELECT id FROM users WHERE username = 'admin'")
+        # if not cursor.fetchone():
+        #     cursor.execute("INSERT INTO users (username, password_hash, role) VALUES (%s, %s, %s)", ('admin', get_password_hash('admin123'), 'admin'))
+        
+        # # AI 脚本专用后台账号: ai_worker / 密码: ai_pass666
+        # cursor.execute("SELECT id FROM users WHERE username = 'ai_worker'")
+        # if not cursor.fetchone():
+        #     cursor.execute("INSERT INTO users (username, password_hash, role) VALUES (%s, %s, %s)", ('ai_worker', get_password_hash('ai_pass666'), 'service'))
+    conn.close()
+
+init_db()
+
+# ======= 🚨 依赖注入：检查令牌的“保安” =======
+def get_current_user(token: str = Depends(oauth2_scheme)):
+    credentials_exception = HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无效的认证凭据", headers={"WWW-Authenticate": "Bearer"})
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        if username is None: raise credentials_exception
+    except JWTError:
+        raise credentials_exception
+    
+    conn = get_db()
+    with conn.cursor() as cursor:
+        cursor.execute("SELECT * FROM users WHERE username = %s", (username,))
+        user = cursor.fetchone()
+    conn.close()
+    if user is None: raise credentials_exception
+    return user
+
+# ======= API 路由 =======
+
+# 1. 登录拿 Token 接口
+@app.post("/api/login")
+def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
+    conn = get_db()
+    with conn.cursor() as cursor:
+        cursor.execute("SELECT * FROM users WHERE username = %s", (form_data.username,))
+        user = cursor.fetchone()
+    conn.close()
+    
+    if not user or not verify_password(form_data.password, user['password_hash']):
+        raise HTTPException(status_code=400, detail="用户名或密码错误")
+    
+    access_token = create_access_token(data={"sub": user['username'], "role": user['role']})
+    return {"access_token": access_token, "token_type": "bearer", "username": user['username'], "role": user['role']}
+
+# 数据模型定义
+class Camera(BaseModel): 
+    input_source: str
+    name: str = ""
+    model: str = ""
+
+class CameraStatus(BaseModel): 
+    status: str
+
+class Alert(BaseModel): 
+    cam_name: str
+    alert_type: str
+    image_filename: str
+
+# 🚨 以下所有业务接口，全部加入 `current_user: dict = Depends(get_current_user)` 进行拦截保护
+
+@app.get("/api/cameras")
+def get_cameras(current_user: dict = Depends(get_current_user)):
+    conn = get_db(); cursor = conn.cursor(); cursor.execute("SELECT * FROM cameras"); cams = cursor.fetchall(); conn.close()
+    return cams
+
+@app.post("/api/cameras")
+def add_camera(cam: Camera, current_user: dict = Depends(get_current_user)):
+    conn = get_db(); cursor = conn.cursor()
+    cursor.execute("SELECT id FROM cameras WHERE input_source = %s", (cam.input_source,))
+    if cursor.fetchone(): raise HTTPException(status_code=400, detail="该视频源已添加")
+    auto_stream_path = f"cam_{int(time.time())}"
+    final_name = cam.name.strip() if cam.name.strip() else f"未命名_{auto_stream_path[-4:]}"
+    cursor.execute("INSERT INTO cameras (name, model, input_source, stream_path) VALUES (%s, %s, %s, %s)", (final_name, cam.model, cam.input_source, auto_stream_path)); conn.commit(); conn.close()
+    return {"status": "success"}
+
+@app.put("/api/cameras/{cam_id}")
+def update_camera(cam_id: int, cam: Camera, current_user: dict = Depends(get_current_user)):
+    conn = get_db(); cursor = conn.cursor()
+    cursor.execute("SELECT id FROM cameras WHERE input_source = %s AND id != %s", (cam.input_source, cam_id))
+    if cursor.fetchone(): raise HTTPException(status_code=400, detail="冲突")
+    cursor.execute("UPDATE cameras SET name=%s, model=%s, input_source=%s WHERE id=%s", (cam.name, cam.model, cam.input_source, cam_id)); conn.commit(); conn.close()
+    return {"status": "success"}
+
+@app.delete("/api/cameras/{cam_id}")
+def delete_camera(cam_id: int, current_user: dict = Depends(get_current_user)):
+    conn = get_db(); cursor = conn.cursor(); cursor.execute("DELETE FROM cameras WHERE id = %s", (cam_id,)); conn.commit(); conn.close()
+    return {"status": "success"}
+
+@app.put("/api/cameras/{cam_id}/status")
+def update_camera_status(cam_id: int, stat: CameraStatus, current_user: dict = Depends(get_current_user)):
+    conn = get_db(); cursor = conn.cursor(); cursor.execute("UPDATE cameras SET status=%s WHERE id=%s", (stat.status, cam_id)); conn.commit(); conn.close()
+    return {"status": "success"}
+
+@app.post("/api/alerts")
+def add_alert(alert: Alert, current_user: dict = Depends(get_current_user)):
+    conn = get_db(); cursor = conn.cursor(); cursor.execute("INSERT INTO alerts (cam_name, alert_type, image_filename) VALUES (%s, %s, %s)", (alert.cam_name, alert.alert_type, alert.image_filename)); conn.commit(); conn.close()
+    return {"status": "success"}
+
+@app.get("/api/alerts")
+def get_alerts(current_user: dict = Depends(get_current_user)):
+    conn = get_db(); cursor = conn.cursor(); cursor.execute("SELECT * FROM alerts ORDER BY timestamp DESC LIMIT 50"); alerts = cursor.fetchall()
+    for alert in alerts: alert['timestamp'] = alert['timestamp'].strftime("%Y-%m-%d %H:%M:%S")
+    conn.close()
+    return alerts
+
+if __name__ == '__main__':
+    print("🚀 企业级 API 服务器 (含JWT鉴权) 启动: http://127.0.0.1:8000")
+    uvicorn.run(app, host="0.0.0.0", port=8000)
