@@ -29,7 +29,7 @@
     </div>
 
     <!-- 放大预览模态框 -->
-    <div v-if="previewImageUrl" class="preview-modal" @click.self="closeImagePreview">
+    <div v-if="previewImageUrl" class="preview-modal" @mousedown.self="closeImagePreview">
       <div class="preview-content">
         <button class="preview-close-btn" @click="closeImagePreview">✖</button>
         <img :src="previewImageUrl" alt="大图预览" />

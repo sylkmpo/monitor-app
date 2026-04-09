@@ -35,7 +35,7 @@
       </div>
     </div>
 
-    <div v-if="showHistoryModal" class="modal-overlay" @click.self="closeHistory">
+    <div v-if="showHistoryModal" class="modal-overlay" @mousedown.self="closeHistory">
       <div class="modal-content">
         <div class="modal-header">
           <h3>🎞️ 【{{ currentHistoryCam.name }}】历史录像</h3>

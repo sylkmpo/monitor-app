@@ -75,7 +75,7 @@
     </div>
 
     <!-- 高级系统弹窗 -->
-    <div class="modal-overlay" v-if="showModal" @click.self="closeModal">
+    <div class="modal-overlay" v-if="showModal" @mousedown.self="closeModal">
       <div class="modal-content">
         <div class="modal-header">
           <h3>{{ isEditing ? '编辑设备参数' : '接入新设备' }}</h3>
