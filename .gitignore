@@ -8,3 +8,4 @@ dist/
 dist-ssr/
 .idea
 .vscode
+*.pt
