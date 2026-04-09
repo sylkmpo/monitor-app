@@ -41,12 +41,13 @@ const handleLogin = async () => {
 
     const res = await axios.post('http://127.0.0.1:8000/api/login', formData);
     
-    // 覆盖保存最新的令牌和用户名
-    localStorage.setItem('access_token', res.data.access_token);
-    localStorage.setItem('username', res.data.username);
+    // 覆盖保存最新的令牌和用户名及角色信息
+    sessionStorage.setItem('access_token', res.data.access_token);
+    sessionStorage.setItem('username', res.data.username);
+    sessionStorage.setItem('role', res.data.role || 'operator');
     
     // 🚨 绝杀修复：不用 router.push('/')，直接让浏览器强制刷新并跳转！
-    // 这样能彻底清空 Vue 内存中卡住的旧名字，强制重新读取 LocalStorage。
+    // 这样能彻底清空 Vue 内存中卡住的旧名字，强制重新读取 sessionStorage。
     window.location.href = '/';
     
   } catch (err) {

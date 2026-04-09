@@ -12,6 +12,7 @@
         <router-link to="/" class="nav-btn">📺 实时监控</router-link>
         <router-link to="/alerts" class="nav-btn">🚨 告警中心</router-link>
         <router-link to="/settings" class="nav-btn">⚙️ 设备管理</router-link>
+        <router-link to="/user" class="nav-btn">👤 用户中心</router-link>
       </nav>
       
       <div class="bottom-actions">
@@ -30,12 +31,13 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
+import axios from 'axios';
 
 const route = useRoute();
 const router = useRouter();
 
 const isLoginPage = computed(() => route.path === '/login');
-const currentUsername = computed(() => localStorage.getItem('username') || '管理员');
+const currentUsername = computed(() => sessionStorage.getItem('username') || '管理员');
 
 // ======= 🚨 主题切换逻辑 =======
 // 从本地存储读取历史偏好，默认深色
@@ -57,8 +59,8 @@ onMounted(() => {
 // ===============================
 
 const logout = () => {
-  localStorage.removeItem('access_token');
-  localStorage.removeItem('username');
+  sessionStorage.removeItem('access_token');
+  sessionStorage.removeItem('username');
   router.push('/login');
 };
 </script>

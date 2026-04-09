@@ -44,21 +44,55 @@
 
         <div class="modal-body">
           <div class="video-player">
-            <video v-if="playingUrl" :src="playingUrl" controls autoplay class="html5-video"></video>
+            <video v-if="playingUrl" :src="playingUrl" controls autoplay muted class="html5-video"></video>
             <div v-else class="no-video-selected">请从右侧选择时段播放</div>
           </div>
 
           <div class="video-list">
-            <h4>录像切片 (最近15天)</h4>
-            <div v-if="records.length === 0" style="color: var(--text-muted); font-size: 13px;">暂无录像记录</div>
-            <button
-              v-for="record in records"
-              :key="record.filename"
-              @click="playRecord(record)"
-              :class="['record-item', { active: playingUrl && playingUrl.split('?')[0] === record.url }]"
-            >
-              🎥 {{ formatRecordName(record.filename) }}
-            </button>
+            <div class="list-header">
+              <h4>录像切片检索</h4>
+            </div>
+            
+            <!-- 企业级筛选面板 -->
+            <div class="filter-panel">
+              <div class="filter-row">
+                <span class="filter-icon">📅</span>
+                <input type="date" v-model="selectedDate" class="enterprise-input" />
+              </div>
+              <div class="filter-row">
+                <span class="filter-icon">⏰</span>
+                <div class="time-range-group">
+                  <select v-model.number="selectedStartHour" class="enterprise-select">
+                    <option v-for="h in 24" :key="'s'+(h-1)" :value="h-1">{{ String(h-1).padStart(2, '0') }}:00</option>
+                  </select>
+                  <span class="range-divider">至</span>
+                  <select v-model.number="selectedEndHour" class="enterprise-select">
+                    <option v-for="h in 24" :key="'e'+(h-1)" :value="h-1">{{ String(h-1).padStart(2, '0') }}:59</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <div class="records-scroll-area">
+              <div v-if="filteredRecords.length === 0" class="empty-records">
+                <svg viewBox="0 0 24 24" width="32" height="32" stroke="var(--border-color)" stroke-width="1.5" fill="none"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+                <p>该时段暂无录像</p>
+              </div>
+              
+              <button
+                v-for="record in filteredRecords"
+                :key="record.filename"
+                @click="playRecord(record)"
+                :class="['record-item', { active: playingUrl && playingUrl.split('?')[0] === record.url }]"
+              >
+                <div class="record-icon">
+                  <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none"><path d="M23 7l-7 5 7 5V7z"></path><rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect></svg>
+                </div>
+                <div class="record-info">
+                  <span class="record-name">{{ formatRecordName(record.filename) }}</span>
+                </div>
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -68,7 +102,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue';
+import { ref, computed, onMounted, onUnmounted } from 'vue';
 import axios from 'axios';
 
 const currentTime = ref('');
@@ -83,6 +117,41 @@ const showHistoryModal = ref(false);
 const currentHistoryCam = ref(null);
 const records = ref([]);
 const playingUrl = ref(null);
+
+// 初始化日期为当天
+const getTodayStr = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+const selectedDate = ref(getTodayStr());
+const selectedStartHour = ref(0);
+const selectedEndHour = ref(23);
+
+const filteredRecords = computed(() => {
+  return records.value.filter(r => {
+    // 1. 先过滤日期
+    if (selectedDate.value && !r.filename.startsWith(selectedDate.value)) {
+      return false;
+    }
+    
+    // 2. 解析时段 (文件格式：YYYY-MM-DD_HH-MM-SS...)
+    // 提取中间代表小时的这两位，比如 "2026-04-09_11-59-04" -> 截取下标 11~12 为 "11"
+    const hourStr = r.filename.substring(11, 13);
+    const hour = parseInt(hourStr, 10);
+    
+    if (!isNaN(hour)) {
+      // 如果选中了非法的范围 (比如 23 到 1，需要做处理吗？一般确保 start <= end 即可)
+      const start = Math.min(selectedStartHour.value, selectedEndHour.value);
+      const end = Math.max(selectedStartHour.value, selectedEndHour.value);
+      
+      if (hour < start || hour > end) {
+        return false;
+      }
+    }
+    
+    return true;
+  });
+});
 
 const fetchCameras = async () => {
   try {
@@ -103,6 +172,9 @@ const openHistory = async (cam) => {
   currentHistoryCam.value = cam;
   showHistoryModal.value = true;
   playingUrl.value = null;
+  selectedDate.value = getTodayStr(); // 每次打开强制重置回今天
+  selectedStartHour.value = 0;        // 重置为 0 点
+  selectedEndHour.value = 23;         // 重置为 23 点
   records.value = [];
   try {
     const res = await axios.get(`http://127.0.0.1:8000/api/cameras/${cam.id}/records`);
@@ -114,17 +186,13 @@ const closeHistory = () => {
   showHistoryModal.value = false;
   playingUrl.value = null;
 };
-
 // 播放具体录像，添加时间戳参数打破浏览器对 MP4 大小的强缓存
 const playRecord = (record) => {
   playingUrl.value = null;
   setTimeout(() => {
-    // 仅针对正在录制中的记录，在 URL 上加随机数骗过浏览器的旧时长缓存，强制拉取新数据
-    if (record.url.includes('_recording')) {
-      playingUrl.value = `${record.url}?t=${new Date().getTime()}`;
-    } else {
-      playingUrl.value = record.url;
-    }
+    // 强制每次点击历史录像时都加上时间戳
+    // 这样浏览器将不会使用之前被破坏或因为没下完而卡住的缓存视频
+    playingUrl.value = `${record.url}?t=${new Date().getTime()}`;
   }, 50);
 };
 
@@ -133,9 +201,9 @@ const formatRecordName = (filename) => {
   let name = filename.replace('.mp4', '').replace('_recording', ' (正在录制)');
   // 匹配类似 _17-30-00 并替换为 17:30:00 (使用空格分隔日期和时间)
   name = name.replace(/_(\d{2})-(\d{2})-(\d{2})/g, ' $1:$2:$3');
-  // 把 _到_ 替换为友好的  到
-  name = name.replace(/_到_/g, ' 到 ');
-  return name;
+  // 替换残留的 _到_ 及其变体，使其展示更友好
+  name = name.replace(/_?到_?/g, ' 到 ');
+  return name.trim();
 };
 
 const updateTime = () => {
@@ -183,13 +251,134 @@ onUnmounted(() => {
 .modal-header { padding: 15px 20px; display: flex; justify-content: space-between; align-items: center; background: var(--bg-sidebar); border-bottom: 1px solid var(--border-color); }
 .modal-header h3 { margin: 0; color: var(--text-main); font-size: 18px; }
 .close-btn { background: none; border: none; color: var(--text-sub); font-size: 20px; cursor: pointer; }
-.modal-body { display: flex; height: auto; min-height: 50vh; max-height: 80vh; }
-.video-player { flex: 3; background: var(--bg-body); display: flex; justify-content: center; align-items: center; padding: 20px; }
-.html5-video { width: 100%; aspect-ratio: 16 / 9; object-fit: contain; outline: none; background: #000; border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.3); border: 1px solid var(--border-color); }
-.no-video-selected { color: var(--text-muted); font-size: 15px; }
-.video-list { flex: 1; min-width: 250px; border-left: 1px solid var(--border-color); background: var(--bg-sidebar); padding: 15px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
-.video-list h4 { margin: 0 0 10px 0; color: var(--text-main); font-size: 14px; }
-.record-item { background: var(--bg-body); border: 1px solid var(--border-color); padding: 10px; text-align: left; border-radius: 6px; cursor: pointer; color: var(--text-sub); transition: 0.2s; font-size: 13px; }
-.record-item:hover { background: var(--hover-bg); border-color: var(--primary); }
-.record-item.active { background: var(--primary); color: white; border-color: var(--primary); }
+.modal-body { display: flex; height: 75vh; }
+.video-player { flex: 3; background: #0b0f19; display: flex; justify-content: center; align-items: center; position: relative;}
+.html5-video { width: 100%; height: 100%; object-fit: contain; outline: none; background: #000; box-shadow: 0 4px 15px rgba(0,0,0,0.3); border-right: 1px solid var(--border-color); }
+.no-video-selected { color: rgba(255,255,255,0.4); font-size: 15px; font-weight: 500; letter-spacing: 1px; }
+
+.video-list { 
+  flex: 1; min-width: 320px; 
+  border-left: 1px solid var(--border-color); 
+  background: var(--bg-body); 
+  display: flex; flex-direction: column; 
+}
+.list-header { 
+  padding: 18px 20px; 
+  border-bottom: 1px solid var(--border-color); 
+  background: var(--bg-card); 
+}
+.list-header h4 { margin: 0; color: var(--text-main); font-size: 16px; font-weight: 600;}
+
+/* 检索筛选面板 */
+.filter-panel {
+  padding: 15px 20px;
+  background: var(--bg-sidebar);
+  border-bottom: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.filter-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.filter-icon {
+  font-size: 16px;
+  opacity: 0.7;
+}
+
+/* 企业级表单输入框样式 */
+.enterprise-input, .enterprise-select {
+  flex: 1;
+  padding: 8px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-body);
+  color: var(--text-main);
+  font-size: 13px;
+  transition: all 0.2s;
+  outline: none;
+}
+.enterprise-input:focus, .enterprise-select:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+}
+.time-range-group {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  gap: 6px;
+}
+.range-divider {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+/* 录像切片瀑布流区 */
+.records-scroll-area {
+  flex: 1;
+  padding: 15px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.empty-records {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  padding: 40px 0;
+  gap: 12px;
+  font-size: 14px;
+}
+
+.record-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  padding: 12px 14px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.02);
+}
+.record-item:hover { 
+  transform: translateY(-1px);
+  border-color: var(--primary); 
+  box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+}
+.record-item.active { 
+  background: var(--primary-light, rgba(37, 99, 235, 0.05));
+  border-color: var(--primary); 
+}
+.record-item.active .record-icon, .record-item.active .record-name {
+  color: var(--primary);
+}
+
+.record-icon {
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-body);
+  padding: 8px;
+  border-radius: 6px;
+}
+.record-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+}
+.record-name {
+  color: var(--text-main);
+  font-size: 13px;
+  font-weight: 500;
+}
 </style>
