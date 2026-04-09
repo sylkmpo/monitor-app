@@ -274,9 +274,26 @@ def add_alert(alert: Alert, current_user: dict = Depends(get_current_user)):
     return {"status": "success"}
 
 @app.get("/api/alerts")
-def get_alerts(current_user: dict = Depends(get_current_user)):
-    conn = get_db(); cursor = conn.cursor(); cursor.execute("SELECT * FROM alerts ORDER BY timestamp DESC LIMIT 50"); alerts = cursor.fetchall()
-    for alert in alerts: alert['timestamp'] = alert['timestamp'].strftime("%Y-%m-%d %H:%M:%S")
+def get_alerts(cam_name: str = None, current_user: dict = Depends(get_current_user)):
+    conn = get_db()
+    cursor = conn.cursor()
+    query = "SELECT * FROM alerts"
+    conditions = []
+    params = []
+    
+    if cam_name:
+        conditions.append("cam_name = %s")
+        params.append(cam_name)
+        
+    if conditions:
+        query += " WHERE " + " AND ".join(conditions)
+        
+    query += " ORDER BY timestamp DESC LIMIT 100"
+    
+    cursor.execute(query, tuple(params))
+    alerts = cursor.fetchall()
+    for alert in alerts: 
+        alert['timestamp'] = alert['timestamp'].strftime("%Y-%m-%d %H:%M:%S")
     conn.close()
     return alerts
 
