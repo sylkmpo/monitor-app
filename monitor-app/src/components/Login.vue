@@ -39,7 +39,7 @@ const handleLogin = async () => {
     formData.append('username', username.value);
     formData.append('password', password.value);
 
-    const res = await axios.post('http://127.0.0.1:8000/api/login', formData);
+    const res = await axios.post(`http://${window.location.hostname}:8000/api/login`, formData);
     
     // 覆盖保存最新的令牌和用户名及角色信息
     sessionStorage.setItem('access_token', res.data.access_token);

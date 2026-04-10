@@ -110,7 +110,7 @@ let timeTimer = null;
 let camTimer = null;
 const cameras = ref([]);
 
-const WEBRTC_BASE_URL = 'http://127.0.0.1:8889/';
+const WEBRTC_BASE_URL = `http://${window.location.hostname}:8889/`;
 
 // 历史录像模态框相关
 const showHistoryModal = ref(false);
@@ -155,7 +155,7 @@ const filteredRecords = computed(() => {
 
 const fetchCameras = async () => {
   try {
-    const res = await axios.get('http://127.0.0.1:8000/api/cameras');
+    const res = await axios.get(`http://${window.location.hostname}:8000/api/cameras`);
     cameras.value = res.data.map(cam => ({
       id: cam.id,
       name: cam.name,
@@ -177,7 +177,7 @@ const openHistory = async (cam) => {
   selectedEndHour.value = 23;         // 重置为 23 点
   records.value = [];
   try {
-    const res = await axios.get(`http://127.0.0.1:8000/api/cameras/${cam.id}/records`);
+    const res = await axios.get(`http://${window.location.hostname}:8000/api/cameras/${cam.id}/records`);
     records.value = res.data;
   } catch(e) {}
 };

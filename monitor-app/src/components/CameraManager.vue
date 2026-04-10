@@ -119,7 +119,7 @@
 import { ref, onMounted, onUnmounted } from 'vue';
 import axios from 'axios';
 
-const API_BASE = 'http://127.0.0.1:8000/api/cameras';
+const API_BASE = `http://${window.location.hostname}:8000/api/cameras`;
 const cameras = ref([]);
 
 // 预设的人气品牌型号

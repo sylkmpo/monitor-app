@@ -252,8 +252,10 @@ def update_camera_status(cam_id: int, stat: CameraStatus, current_user: dict = D
     return {"status": "success"}
 
 
+from fastapi import Request
+
 @app.get("/api/cameras/{cam_id}/records")
-def get_camera_records(cam_id: int, current_user: dict = Depends(get_current_user)):
+def get_camera_records(cam_id: int, request: Request, current_user: dict = Depends(get_current_user)):
     import urllib.parse
     cam_dir = os.path.join(RECORD_DIR, str(cam_id))
     if not os.path.exists(cam_dir):
@@ -263,8 +265,11 @@ def get_camera_records(cam_id: int, current_user: dict = Depends(get_current_use
     # 取消过滤，把包含 _recording.mp4 的切片也一并返回给前端，允许用户看最近录制未完成的片段
     mp4_files = sorted([f for f in files if f.endswith('.mp4')], reverse=True)
 
+    # 动态获取请求的主机名（解决局域网其他设备不能看录像的问题）
+    domain = request.url.hostname
+    
     return [
-        {"filename": f, "url": f"http://127.0.0.1:8000/records/{cam_id}/{urllib.parse.quote(f)}"}
+        {"filename": f, "url": f"http://{domain}:8000/records/{cam_id}/{urllib.parse.quote(f)}"}
         for f in mp4_files
     ]
 

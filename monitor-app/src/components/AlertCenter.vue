@@ -37,7 +37,7 @@
           <input type="checkbox" class="alert-checkbox" :value="alert.id" v-model="selectedAlerts" />
 
           <div class="img-wrapper" @click="openImagePreview(alert.image_filename)">
-            <img :src="`http://127.0.0.1:8000/snapshots/${alert.image_filename}`" alt="抓拍画面" @error="handleImgError" />
+            <img :src="`http://${hostUrl}:8000/snapshots/${alert.image_filename}`" alt="抓拍画面" @error="handleImgError" />
           </div>
           <div class="alert-info">
             <div class="alert-type">⚠️ {{ alert.alert_type }}</div>
@@ -63,6 +63,8 @@
 import { ref, computed, onMounted } from 'vue';
 import axios from 'axios';
 
+const hostUrl = window.location.hostname;
+
 const alerts = ref([]);
 const selectedAlerts = ref([]); // 记录选中的告警 ID
 const cameras = ref([]);
@@ -84,7 +86,7 @@ const groupedAlerts = computed(() => {
 const previewImageUrl = ref(null);
 
 const openImagePreview = (filename) => {
-  previewImageUrl.value = `http://127.0.0.1:8000/snapshots/${filename}`;
+  previewImageUrl.value = `http://${hostUrl}:8000/snapshots/${filename}`;
 };
 
 const closeImagePreview = () => {
@@ -93,7 +95,7 @@ const closeImagePreview = () => {
 
 const fetchCameras = async () => {
   try {
-    const res = await axios.get('http://127.0.0.1:8000/api/cameras');
+    const res = await axios.get(`http://${window.location.hostname}:8000/api/cameras`);
     cameras.value = res.data;
   } catch (error) {
     console.error("获取设备列表失败", error);
@@ -105,7 +107,7 @@ const fetchAlerts = async () => {
     const params = {};
     if (filterCamName.value) params.cam_name = filterCamName.value;
 
-    const res = await axios.get('http://127.0.0.1:8000/api/alerts', { params });
+    const res = await axios.get(`http://${window.location.hostname}:8000/api/alerts`, { params });
     alerts.value = res.data;
     selectedAlerts.value = []; // 每次刷新后清空选中状态
   } catch (error) {
@@ -132,7 +134,7 @@ const deleteSelected = async () => {
   if (!confirm(`确定要彻底删除选中的 ${selectedAlerts.value.length} 张图片及记录吗？`)) return;
 
   try {
-    await axios.delete('http://127.0.0.1:8000/api/alerts', {
+    await axios.delete(`http://${window.location.hostname}:8000/api/alerts`, {
       data: { alert_ids: selectedAlerts.value }
     });
     fetchAlerts(); // 重新拉取最新数据

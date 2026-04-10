@@ -69,7 +69,7 @@ const submitPwdChange = async () => {
   
   try {
     isSubmitting.value = true;
-    await axios.put('http://127.0.0.1:8000/api/users/me/password', {
+    await axios.put(`http://${window.location.hostname}:8000/api/users/me/password`, {
       old_password: pwdForm.value.old_password,
       new_password: pwdForm.value.new_password
     });
