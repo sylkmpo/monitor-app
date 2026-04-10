@@ -7,7 +7,6 @@ os.environ["OPENCV_FFMPEG_READ_TIMEOUT"] = "3000"  # 限制读取超时为 3 秒
 import cv2
 import subprocess
 import threading
-
 import time
 import requests
 import datetime
@@ -19,13 +18,8 @@ from ultralytics import YOLO
 logger.add("logs/ai_server_{time:%Y-%m-%d}.log", rotation="50 MB", retention="10 days", level="INFO")
 logger.info("================ AI Server Starting ================")
 
-# ====== 深度重构：极省显存与算力的全局单例模型 ======
-logger.info("🚀 正在全局加载单例 YOLO 模型...")
-model = YOLO("yolo26n.pt")
-# 核心突破：多线程全局推理锁，避免 CUDA 上下文争抢爆显存
-ai_inference_lock = threading.Lock()
-
-
+logger.info("正在加载 YOLO 模型到显卡...")
+model = YOLO('yolo26n.pt') 
 
 
 
@@ -111,12 +105,13 @@ def process_video_stream(cam_id, cam_name, input_source, output_rtsp, stop_event
         if first_attempt:
             logger.info(f"[{cam_name}] 正在尝试连接摄像头: {input_source}")
         
-        is_offline = False
         if str(input_source).isdigit():
             cap = cv2.VideoCapture(int(input_source), cv2.CAP_DSHOW)
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
         else:
+            # ✅ 新增强力拦截器：用 Python 原生 Socket "探路"，直接绕过 OpenCV 的恶心 C++ 底层报错！
+            is_offline = False
             if isinstance(input_source, str) and "://" in input_source:
                 import urllib.parse, socket
                 parsed = urllib.parse.urlparse(input_source)
@@ -124,133 +119,167 @@ def process_video_stream(cam_id, cam_name, input_source, output_rtsp, stop_event
                 port = parsed.port or (554 if parsed.scheme == 'rtsp' else 80)
                 if host:
                     try:
-                        with socket.create_connection((host, port), timeout=2.0): pass
-                    except Exception:
+                        # 仅用 2 秒快速尝试握手，不成功直接丢弃，绝不让 OpenCV 碰这个地址
+                        with socket.create_connection((host, port), timeout=2.0):
+                            pass
+                    except (socket.timeout, ConnectionRefusedError, OSError):
                         is_offline = True
             
             if is_offline:
+                # 伪造一个失败的拉流对象，避开真实的 ffmpeg 调用
                 class DummyCap:
                     def isOpened(self): return False
                 cap = DummyCap()
             else:
-                try: cap = cv2.VideoCapture(input_source, cv2.CAP_FFMPEG, [cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 3000, cv2.CAP_PROP_READ_TIMEOUT_MSEC, 3000])
-                except TypeError: cap = cv2.VideoCapture(input_source, cv2.CAP_FFMPEG)
+                # ✅ 经过探路，确认网络通畅，安全放行给 OpenCV
+                try:
+                    cap = cv2.VideoCapture(input_source, cv2.CAP_FFMPEG, [cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 3000, cv2.CAP_PROP_READ_TIMEOUT_MSEC, 3000])
+                except TypeError:
+                    # 兼容老版 OpenCV
+                    cap = cv2.VideoCapture(input_source, cv2.CAP_FFMPEG)
         
         if not cap.isOpened():
             if first_attempt:
-                logger.info(f"❌ [{cam_name}] 连接失败，已转入后台静默重连...")
+                logger.info(f"❌ [{cam_name}] 连接失败。已转入后台静默秒级重连模式...")
                 first_attempt = False
-            stop_event.wait(2)
+            stop_event.wait(2)  # 每两秒重新拉取，确保第一时间抢占画面
             continue
             
         if not first_attempt:
-            logger.info(f"✅ [{cam_name}] 在线！")
-            first_attempt = True
+            logger.info(f"✅ [{cam_name}] 摄像头已恢复在线！")
+            first_attempt = True # 下次掉线可以重新提醒一次
             
         report_status(cam_id, "online")
+        
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  
-        width, height = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         fps = int(cap.get(cv2.CAP_PROP_FPS)) or 30
 
-        # ====== 深度重构点 2：破除 NVENC 8路硬性限制 ======
-        # 使用 libx264 ultrafast 软编，将 GPU 的编码压力转移给多核 CPU，实现路数突破。
+        # ✅ 将 GOP (关键帧间隔) 从 1 秒降为 0.25 秒，配合 NVENC 零延迟参数，极大缩短 WebRTC 秒开首帧时间
         gop_size = max(5, fps // 4)
         command = [
             'ffmpeg', '-y', '-f', 'rawvideo', '-vcodec', 'rawvideo', '-pix_fmt', 'bgr24',
             '-s', f"{width}x{height}", '-r', str(fps), '-i', '-',  
-            '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency', 
-            '-pix_fmt', 'yuv420p', '-delay', '0', '-bf', '0', '-g', str(gop_size), '-f', 'rtsp', output_rtsp              
+            '-c:v', 'h264_nvenc', '-pix_fmt', 'yuv420p', '-profile:v', 'main',    
+            '-preset', 'p1', '-tune', 'ull', '-zerolatency', '1', '-delay', '0', '-rc', 'vbr', '-cq', '19',             
+            '-bf', '0', '-g', str(gop_size), '-f', 'rtsp', output_rtsp              
         ]
 
         process = subprocess.Popen(command, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        logger.info(f"🚀 [{cam_name}] 性能突破版推流已启动")
+        logger.info(f"🚀 [{cam_name}] 推流与AI分析已启动")
 
-        last_alert_time = last_person_time = 0 
+        last_alert_time = 0 
+        last_person_time = 0 
         event_ongoing = False 
-        max_person_count, frame_count = 0, 0
-        last_boxes = [] # 用于帧复用机制的检测框缓存
+        max_person_count = 0  # 🔴 记录当前事件周期内的最大人数
 
         while cap.isOpened() and not stop_event.is_set():
             ret, frame = cap.read()
-            if not ret: break
+            if not ret:
+                logger.info(f"⚠️ [{cam_name}] 视频流异常中断...")
+                break
                 
-            frame_count += 1
-            current_time = time.time()
+            # 🔴 新增改进：加入 conf=0.5 和 iou=0.45 参数，过滤掉模糊和重叠产生的虚假人数
+            results = model(frame, stream=True, verbose=False, device=0, conf=0.5, iou=0.45)
+            pipe_broken = False
             
-            # ====== 深度重构点 3：AI 抽帧锁与追踪复用机制 ======
-            # 每 5 帧仅进行 1 次真实推理（节省 80% 算力），期间复用边缘框位置以保持视觉流畅
-            if frame_count % 5 == 0:
-                with ai_inference_lock:
-                    results = model(frame, stream=False, verbose=False, device=0, conf=0.5, iou=0.45)
+            for r in results:
+                person_count = 0
+                for box in r.boxes:
+                    if int(box.cls[0]) == 0: 
+                        person_count += 1
                 
-                new_boxes = []
-                for r in results:
-                    for box in r.boxes:
-                        if int(box.cls[0]) == 0:  # 只收集类为人的检测框
-                            x1, y1, x2, y2 = map(int, box.xyxy[0])
-                            new_boxes.append((x1, y1, x2, y2))
-                last_boxes = new_boxes
-            
-            person_count = len(last_boxes)
-            
-            # --- 报警逻辑 ---
-            if person_count > 0:
-                last_person_time = current_time 
-                if not event_ongoing or person_count > max_person_count:
-                    event_ongoing = True 
-                    if current_time - last_alert_time > 8:
-                        last_alert_time = current_time
-                        max_person_count = person_count 
-                        
-                        img_filename = f"alert_{cam_name}_{int(current_time)}.jpg"
-                        img_path = os.path.join(SNAPSHOT_DIR, img_filename)
-                        
-                        snap_frame = frame.copy()
-                        for (x1, y1, x2, y2) in last_boxes:
-                            cv2.rectangle(snap_frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
-                        cv2.imwrite(img_path, snap_frame)
-                        
-                        try:
-                            # 此处为了不阻塞后续操作，可以直接忽略超时的警告
-                            requests.post("http://127.0.0.1:8000/api/alerts", json={
-                                "cam_name": cam_name,
-                                "alert_type": f"检测到异常闯入 (当前共有 {person_count} 人)",
-                                "image_filename": img_filename
-                            }, headers={"Authorization": f"Bearer {API_TOKEN}"}, timeout=2)
-                        except Exception: pass
-            else:
-                if event_ongoing and (current_time - last_person_time > 5):
-                    event_ongoing, max_person_count = False, 0 
-
-            # ====== 视觉渲染（无论是否推断，都直接渲染历史缓存框）======
-            annotated_frame = frame
-            for (x1, y1, x2, y2) in last_boxes:
-                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-
-            frame_h, frame_w = annotated_frame.shape[:2]
-            scale_ratio = max(0.4, frame_w / 1920.0) 
-            fs = 1.0 * scale_ratio
-            th = max(1, int(round(2.0 * scale_ratio)))
-            ct_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            
-            (tw, th_h), baseline = cv2.getTextSize(ct_str, cv2.FONT_HERSHEY_SIMPLEX, fs, th)
-            pad, tx, ty = int(15 * scale_ratio), int(30 * scale_ratio), int(45 * scale_ratio) + th_h 
-            bx1, by1 = max(0, tx - pad), max(0, ty - th_h - pad)
-            bx2, by2 = min(frame_w, tx + tw + pad), min(frame_h, ty + int(baseline) + pad)
-            
-            if by2 > by1 and bx2 > bx1:
-                roi = annotated_frame[by1:by2, bx1:bx2]
-                annotated_frame[by1:by2, bx1:bx2] = cv2.addWeighted(roi, 0.5, roi, 0, 0)
+                current_time = time.time()
                 
-            cv2.putText(annotated_frame, ct_str, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, fs, (255, 255, 255), th, cv2.LINE_AA)
+                if person_count > 0:
+                    last_person_time = current_time 
+                    
+                    # 💡 核心改良：引入 max_person_count
+                    # 只有当是一次“全新的事件” 或者 “画面人数突破了这次事件的历史最高值” 时，才去尝试抓拍
+                    if not event_ongoing or person_count > max_person_count:
+                        event_ongoing = True 
+                        
+                        if current_time - last_alert_time > 8:
+                            last_alert_time = current_time
+                            max_person_count = person_count  # 更新当前事件的最大人数水位标杆
+                            
+                            timestamp_str = str(int(current_time))
+                            img_filename = f"alert_{cam_name}_{timestamp_str}.jpg"
+                            img_path = os.path.join(SNAPSHOT_DIR, img_filename)
+                            
+                            annotated_frame = r.plot() 
+                            cv2.imwrite(img_path, annotated_frame)
+                            
+                            try:
+                                # 🚨 加上 headers=get_auth_headers()
+                                requests.post("http://127.0.0.1:8000/api/alerts", json={
+                                    "cam_name": cam_name,
+                                    "alert_type": f"检测到异常闯入 (当前共有 {person_count} 人)",
+                                    "image_filename": img_filename
+                                }, headers=get_auth_headers(), timeout=2)
+                                logger.info(f"🚨 [{cam_name}] 新事件触发！画面人数变为 {person_count}，抓拍: {img_filename}")
+                            except Exception:
+                                pass
+                else:
+                    if event_ongoing and (current_time - last_person_time > 5):
+                        event_ongoing = False
+                        max_person_count = 0 # 事件结束，最高人数清零
+                        logger.info(f"✅ [{cam_name}] 人员已全部离开，重新布防。")
 
-            try: process.stdin.write(annotated_frame.tobytes())
-            except Exception: break 
+                annotated_frame_for_stream = r.plot()
+                
+                # ====== 🔴 恢复：无损原生画质与高保真比例时间水印 ======
+                frame_h, frame_w = annotated_frame_for_stream.shape[:2]
+                scale_ratio = max(0.4, frame_w / 1920.0) 
+                
+                font_scale = 1.0 * scale_ratio
+                thickness = max(1, int(round(2.0 * scale_ratio)))
+                
+                current_time_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                (text_w, text_h), baseline = cv2.getTextSize(current_time_str, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
+                
+                padding = int(15 * scale_ratio)
+                text_x = int(30 * scale_ratio)
+                text_y = int(45 * scale_ratio) + text_h 
+                
+                x1, y1 = max(0, text_x - padding), max(0, text_y - text_h - padding)
+                x2, y2 = min(frame_w, text_x + text_w + padding), min(frame_h, text_y + int(baseline) + padding)
+                
+                # 仅截取文字区域 (ROI) 将其原位加深，不污染全局画质
+                if y2 > y1 and x2 > x1:
+                    roi = annotated_frame_for_stream[y1:y2, x1:x2]
+                    darkened = cv2.addWeighted(roi, 0.5, roi, 0, 0)
+                    annotated_frame_for_stream[y1:y2, x1:x2] = darkened
+                
+                # 写入纯白抗锯齿时间文字
+                cv2.putText(annotated_frame_for_stream, current_time_str, (text_x, text_y), 
+                            cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
+                # ====================================================
+
+                try:
+                    process.stdin.write(annotated_frame_for_stream.tobytes())
+                except Exception:
+                    pipe_broken = True
+                    break
+                    
+            if pipe_broken:
+                break 
 
         cap.release()
-        try: process.terminate()
-        except: pass
-        if not stop_event.is_set(): stop_event.wait(5)
+        if 'process' in locals() and process:
+            if process.stdin: 
+                try: process.stdin.close()
+                except: pass
+            if process.poll() is None: 
+                process.terminate()
+            try: process.wait(timeout=2)
+            except: process.kill()
+        
+        # 🔴 新增：当内部流循环异常断开时，先短暂休眠，避免死循环爆CPU或刷屏
+        if not stop_event.is_set():
+            logger.info(f"⚠️ [{cam_name}] 视频流异常断开或推流失败，将于 5 秒后尝试重启...")
+            stop_event.wait(5)
 
 
 def start_recording(cam_id, rtsp_url, stop_event):
@@ -375,7 +404,6 @@ def get_cameras_from_api():
 
 
 if __name__ == '__main__':
-    
     active_threads = {}
     ai_login()
     
