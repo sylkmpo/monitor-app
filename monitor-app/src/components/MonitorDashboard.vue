@@ -1,7 +1,7 @@
 <template>
   <div class="monitor-dashboard">
     <header class="header">
-      <h1>📹 监控画面看板</h1>
+      <h1>实时监控看板</h1>
       <div class="time-display">{{ currentTime }}</div>
     </header>
 
@@ -14,7 +14,7 @@
         <div class="card-header">
           <div class="cam-name">{{ cam.name }}</div>
           <div style="display:flex; align-items:center; gap: 15px;">
-            <button @click="openHistory(cam)" class="history-btn">🎞️ 历史</button>
+            <button @click="openHistory(cam)" class="history-btn">历史</button>
             <div class="status-badge">
               <div class="dot" :class="cam.status"></div>
               {{ cam.status === 'connected' ? '设备在线' : '设备离线' }}
@@ -38,8 +38,8 @@
     <div v-if="showHistoryModal" class="modal-overlay" @mousedown.self="closeHistory">
       <div class="modal-content">
         <div class="modal-header">
-          <h3>🎞️ 【{{ currentHistoryCam.name }}】历史录像</h3>
-          <button @click="closeHistory" class="close-btn">✖</button>
+          <h3>{{ currentHistoryCam.name }} 历史录像</h3>
+          <button @click="closeHistory" class="close-btn">×</button>
         </div>
 
         <div class="modal-body">
@@ -225,17 +225,16 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-/* 保留原有样式 */
-.monitor-dashboard { padding: 24px; box-sizing: border-box; }
-.header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; padding-bottom: 16px; border-bottom: 1px solid var(--border-color); }
-.header h1 { margin: 0; font-size: 24px; font-weight: 600; color: var(--text-main); }
-.time-display { font-size: 16px; color: var(--text-sub); font-variant-numeric: tabular-nums; font-weight: 500; }
+.monitor-dashboard { padding: 28px 32px; box-sizing: border-box; }
+.header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 22px; padding-bottom: 16px; border-bottom: 1px solid var(--border-color); }
+.header h1 { margin: 0; font-size: 24px; font-weight: 800; color: var(--text-main); letter-spacing: 0; }
+.time-display { font-size: 14px; color: var(--text-sub); font-variant-numeric: tabular-nums; font-weight: 700; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 6px; padding: 8px 12px; }
 .video-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
 @media (max-width: 1000px) { .video-grid { grid-template-columns: 1fr; } }
-.card { background-color: var(--bg-card); border: 1px solid var(--border-color); border-radius: 12px; overflow: hidden; box-shadow: var(--shadow); transition: 0.3s; }
-.card-header { padding: 12px 20px; display: flex; justify-content: space-between; align-items: center; background-color: var(--hover-bg); border-bottom: 1px solid var(--border-color); }
+.card { background-color: var(--bg-card); border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden; box-shadow: var(--shadow-soft); transition: 0.2s; }
+.card-header { padding: 12px 16px; display: flex; justify-content: space-between; align-items: center; background-color: var(--bg-card); border-bottom: 1px solid var(--border-color); }
 .cam-name { font-size: 15px; font-weight: bold; color: var(--text-main); }
-.history-btn { background: var(--primary); color: white; border: none; padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: bold; }
+.history-btn { background: var(--primary); color: white; border: none; padding: 6px 10px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 800; }
 .history-btn:hover { background: var(--primary-hover); }
 .status-badge { display: flex; align-items: center; font-size: 13px; color: var(--text-sub); font-weight: 500;}
 .dot { width: 8px; height: 8px; border-radius: 50%; margin-right: 8px; }
@@ -247,9 +246,9 @@ onUnmounted(() => {
 
 /* 模态框样式 */
 .modal-overlay { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.6); display: flex; justify-content: center; align-items: center; z-index: 9999; }
-.modal-content { background: var(--bg-card); width: 85%; max-width: 1200px; border-radius: 12px; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,0.5); border: 1px solid var(--border-color); }
-.modal-header { padding: 15px 20px; display: flex; justify-content: space-between; align-items: center; background: var(--bg-sidebar); border-bottom: 1px solid var(--border-color); }
-.modal-header h3 { margin: 0; color: var(--text-main); font-size: 18px; }
+.modal-content { background: var(--bg-card); width: 85%; max-width: 1200px; border-radius: 8px; overflow: hidden; box-shadow: 0 18px 40px rgba(0,0,0,0.35); border: 1px solid var(--border-color); }
+.modal-header { padding: 15px 20px; display: flex; justify-content: space-between; align-items: center; background: var(--bg-card); border-bottom: 1px solid var(--border-color); }
+.modal-header h3 { margin: 0; color: var(--text-main); font-size: 18px; font-weight: 800; }
 .close-btn { background: none; border: none; color: var(--text-sub); font-size: 20px; cursor: pointer; }
 .modal-body { display: flex; height: 75vh; }
 .video-player { flex: 3; background: #0b0f19; display: flex; justify-content: center; align-items: center; position: relative;}
@@ -272,7 +271,7 @@ onUnmounted(() => {
 /* 检索筛选面板 */
 .filter-panel {
   padding: 15px 20px;
-  background: var(--bg-sidebar);
+  background: var(--hover-bg);
   border-bottom: 1px solid var(--border-color);
   display: flex;
   flex-direction: column;

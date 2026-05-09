@@ -2,6 +2,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 import MonitorDashboard from '../components/MonitorDashboard.vue'
 import CameraManager from '../components/CameraManager.vue'
 import AlertCenter from '../components/AlertCenter.vue'
+import RiskRuleManager from '../components/RiskRuleManager.vue'
 import Login from '../components/Login.vue' // 新增
 import UserCenter from '../components/UserCenter.vue' // 新增
 
@@ -9,6 +10,7 @@ const routes = [
   { path: '/login', component: Login },
   { path: '/', component: MonitorDashboard },
   { path: '/alerts', component: AlertCenter },
+  { path: '/rules', component: RiskRuleManager },
   { path: '/settings', component: CameraManager },
   { path: '/user', component: UserCenter }
 ]

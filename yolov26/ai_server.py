@@ -5,6 +5,8 @@ os.environ["OPENCV_VIDEOIO_DEBUG"] = "0"
 os.environ["OPENCV_FFMPEG_DEBUG"] = "0"
 os.environ["OPENCV_FFMPEG_READ_TIMEOUT"] = "3000"  # 限制读取超时为 3 秒
 import cv2
+import json
+import math
 import subprocess
 import threading
 
@@ -14,6 +16,27 @@ import datetime
 import sys
 from loguru import logger
 from ultralytics import YOLO
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_DIR = os.path.dirname(BASE_DIR)
+
+def load_env_file(path):
+    if not os.path.exists(path):
+        return
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+load_env_file(os.path.join(PROJECT_DIR, ".env"))
+load_env_file(os.path.join(BASE_DIR, ".env"))
+
+API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000")
+AI_WORKER_USERNAME = os.getenv("AI_WORKER_USERNAME", "ai_worker")
+AI_WORKER_PASSWORD = os.getenv("AI_WORKER_PASSWORD", "ai_pass666")
 
 # 配置企业级日志系统
 logger.add("logs/ai_server_{time:%Y-%m-%d}.log", rotation="50 MB", retention="10 days", level="INFO")
@@ -29,7 +52,6 @@ ai_inference_lock = threading.Lock()
 
 
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SNAPSHOT_DIR = os.path.join(BASE_DIR, 'snapshots')
 os.makedirs(SNAPSHOT_DIR, exist_ok=True)
 
@@ -44,8 +66,8 @@ def ai_login():
     global API_TOKEN
     try:
         # 使用我们在数据库预留的 ai_worker 账号登录
-        res = requests.post("http://127.0.0.1:8000/api/login", 
-                            data={"username": "ai_worker", "password": "ai_pass666"}, timeout=3)
+        res = requests.post(f"{API_BASE_URL}/api/login", 
+                            data={"username": AI_WORKER_USERNAME, "password": AI_WORKER_PASSWORD}, timeout=3)
         if res.status_code == 200:
             API_TOKEN = res.json()["access_token"]
             logger.info("✅ 身份验证成功：AI 服务已获取企业级 JWT 令牌！")
@@ -57,6 +79,322 @@ def ai_login():
 def get_auth_headers():
     """生成带有通行证的请求头"""
     return {"Authorization": f"Bearer {API_TOKEN}"}
+
+# ================= 🚨 风险事件检测引擎 =================
+EVENT_NAMES = {
+    "intrusion": "禁区入侵",
+    "line_crossing": "越线检测",
+    "crowding": "人员聚集",
+    "loitering": "长时间逗留",
+    "fall_suspected": "疑似倒地"
+}
+
+DEFAULT_RULES = [
+    {
+        "id": "default_crowding",
+        "rule_type": "crowding",
+        "enabled": True,
+        "rule_name": "默认人员聚集检测",
+        "risk_level": "medium",
+        "config": {"person_threshold": 3, "duration_threshold": 3, "cooldown_seconds": 30}
+    },
+    {
+        "id": "default_fall",
+        "rule_type": "fall_suspected",
+        "enabled": True,
+        "rule_name": "默认疑似倒地检测",
+        "risk_level": "high",
+        "config": {"aspect_ratio_threshold": 1.3, "duration_threshold": 2, "cooldown_seconds": 30}
+    }
+]
+
+def center_of_box(box):
+    x1, y1, x2, y2 = box
+    return ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
+
+def box_aspect_ratio(box):
+    x1, y1, x2, y2 = box
+    width = max(1, x2 - x1)
+    height = max(1, y2 - y1)
+    return width / height
+
+def point_in_region(point, region):
+    if not region:
+        return True
+    x, y = point
+    inside = False
+    polygon = [(float(px), float(py)) for px, py in region]
+    j = len(polygon) - 1
+    for i in range(len(polygon)):
+        xi, yi = polygon[i]
+        xj, yj = polygon[j]
+        intersects = ((yi > y) != (yj > y)) and (x < (xj - xi) * (y - yi) / ((yj - yi) or 1e-9) + xi)
+        if intersects:
+            inside = not inside
+        j = i
+    return inside
+
+def side_of_line(point, line):
+    (x1, y1), (x2, y2) = line
+    return (x2 - x1) * (point[1] - y1) - (y2 - y1) * (point[0] - x1)
+
+def full_frame_region(frame_shape):
+    height, width = frame_shape[:2]
+    return [[0, 0], [width, 0], [width, height], [0, height]]
+
+def normalize_region(config, frame_shape):
+    region = config.get("region")
+    if region:
+        return region
+    return full_frame_region(frame_shape)
+
+def fetch_camera_rules(cam_id):
+    try:
+        res = requests.get(f"{API_BASE_URL}/api/cameras/{cam_id}/rules", headers=get_auth_headers(), timeout=2)
+        if res.status_code == 401:
+            ai_login()
+            res = requests.get(f"{API_BASE_URL}/api/cameras/{cam_id}/rules", headers=get_auth_headers(), timeout=2)
+        if res.status_code == 200:
+            rules = [rule for rule in res.json() if rule.get("enabled")]
+            return rules if rules else [dict(rule) for rule in DEFAULT_RULES]
+    except Exception:
+        pass
+    return [dict(rule) for rule in DEFAULT_RULES]
+
+class CentroidTracker:
+    def __init__(self, max_distance=90, max_lost_seconds=2.0):
+        self.max_distance = max_distance
+        self.max_lost_seconds = max_lost_seconds
+        self.next_id = 1
+        self.tracks = {}
+
+    def update(self, boxes, now):
+        matched_track_ids = set()
+        new_tracks = {}
+
+        for box in boxes:
+            center = center_of_box(box)
+            best_id = None
+            best_distance = None
+
+            for track_id, track in self.tracks.items():
+                if track_id in matched_track_ids:
+                    continue
+                distance = math.dist(center, track["center"])
+                if distance <= self.max_distance and (best_distance is None or distance < best_distance):
+                    best_id = track_id
+                    best_distance = distance
+
+            if best_id is None:
+                best_id = self.next_id
+                self.next_id += 1
+                track = {
+                    "id": best_id,
+                    "first_seen": now,
+                    "history": []
+                }
+            else:
+                track = self.tracks[best_id]
+
+            history = track.get("history", [])
+            history.append(center)
+            track.update({
+                "bbox": box,
+                "center": center,
+                "last_seen": now,
+                "history": history[-20:],
+                "aspect_ratio": box_aspect_ratio(box)
+            })
+            new_tracks[best_id] = track
+            matched_track_ids.add(best_id)
+
+        for track_id, track in self.tracks.items():
+            if track_id not in matched_track_ids and now - track.get("last_seen", now) <= self.max_lost_seconds:
+                new_tracks[track_id] = track
+
+        self.tracks = new_tracks
+        return list(self.tracks.values())
+
+class EventEngine:
+    def __init__(self, cam_id, cam_name):
+        self.cam_id = cam_id
+        self.cam_name = cam_name
+        self.active_since = {}
+        self.last_alert_at = {}
+        self.last_line_side = {}
+        self.rules = []
+        self.last_rule_refresh = 0
+
+    def refresh_rules_if_needed(self, now):
+        if now - self.last_rule_refresh < 10 and self.rules:
+            return
+        self.rules = fetch_camera_rules(self.cam_id)
+        self.last_rule_refresh = now
+
+    def _can_emit(self, key, now, cooldown_seconds):
+        last_alert = self.last_alert_at.get(key, 0)
+        if now - last_alert < cooldown_seconds:
+            return False
+        self.last_alert_at[key] = now
+        return True
+
+    def _duration_ready(self, key, now, threshold):
+        if key not in self.active_since:
+            self.active_since[key] = now
+        return now - self.active_since[key] >= threshold
+
+    def _build_event(self, rule, now, person_count=0, track=None, confidence=0.85, duration=0):
+        event_type = rule.get("rule_type")
+        config = rule.get("config") or {}
+        return {
+            "camera_id": self.cam_id,
+            "cam_name": self.cam_name,
+            "event_type": event_type,
+            "event_name": rule.get("rule_name") or EVENT_NAMES.get(event_type, event_type),
+            "risk_level": rule.get("risk_level", "medium"),
+            "confidence": confidence,
+            "person_count": person_count,
+            "region_name": config.get("region_name") or rule.get("rule_name"),
+            "event_start_time": datetime.datetime.fromtimestamp(now - duration).isoformat(),
+            "duration_seconds": round(duration, 2),
+            "track": track
+        }
+
+    def evaluate(self, tracks, frame_shape, now):
+        self.refresh_rules_if_needed(now)
+        events = []
+        alive_active_keys = set()
+
+        for rule in self.rules:
+            if not rule.get("enabled", True):
+                continue
+
+            rule_type = rule.get("rule_type")
+            rule_id = rule.get("id", rule_type)
+            config = rule.get("config") or {}
+            cooldown = float(config.get("cooldown_seconds", 30))
+
+            if rule_type == "intrusion":
+                region = config.get("region")
+                if not region:
+                    continue
+                min_duration = float(config.get("min_duration", 2))
+                for track in tracks:
+                    if point_in_region(track["center"], region):
+                        key = f"{rule_id}:intrusion:{track['id']}"
+                        alive_active_keys.add(key)
+                        duration = now - self.active_since.get(key, now)
+                        if self._duration_ready(key, now, min_duration) and self._can_emit(key, now, cooldown):
+                            events.append(self._build_event(rule, now, 1, track, 0.9, max(duration, min_duration)))
+
+            elif rule_type == "line_crossing":
+                line = config.get("line")
+                if not line or len(line) != 2:
+                    continue
+                direction = config.get("direction", "any")
+                for track in tracks:
+                    side = side_of_line(track["center"], line)
+                    side_flag = 1 if side > 0 else -1 if side < 0 else 0
+                    side_key = f"{rule_id}:line:{track['id']}"
+                    old_side = self.last_line_side.get(side_key)
+                    self.last_line_side[side_key] = side_flag
+                    if old_side and side_flag and old_side != side_flag:
+                        allowed = direction == "any"
+                        allowed = allowed or (direction == "positive_to_negative" and old_side > 0 and side_flag < 0)
+                        allowed = allowed or (direction == "negative_to_positive" and old_side < 0 and side_flag > 0)
+                        if allowed and self._can_emit(side_key, now, cooldown):
+                            events.append(self._build_event(rule, now, 1, track, 0.88, 0))
+
+            elif rule_type == "crowding":
+                region = normalize_region(config, frame_shape)
+                threshold = int(config.get("person_threshold", 3))
+                duration_threshold = float(config.get("duration_threshold", 3))
+                in_region_tracks = [track for track in tracks if point_in_region(track["center"], region)]
+                key = f"{rule_id}:crowding"
+                if len(in_region_tracks) >= threshold:
+                    alive_active_keys.add(key)
+                    duration = now - self.active_since.get(key, now)
+                    if self._duration_ready(key, now, duration_threshold) and self._can_emit(key, now, cooldown):
+                        events.append(self._build_event(rule, now, len(in_region_tracks), None, 0.86, max(duration, duration_threshold)))
+
+            elif rule_type == "loitering":
+                region = config.get("region")
+                if not region:
+                    continue
+                duration_threshold = float(config.get("duration_threshold", 30))
+                for track in tracks:
+                    if point_in_region(track["center"], region):
+                        key = f"{rule_id}:loitering:{track['id']}"
+                        alive_active_keys.add(key)
+                        duration = now - self.active_since.get(key, now)
+                        if self._duration_ready(key, now, duration_threshold) and self._can_emit(key, now, cooldown):
+                            events.append(self._build_event(rule, now, 1, track, 0.84, max(duration, duration_threshold)))
+
+            elif rule_type == "fall_suspected":
+                ratio_threshold = float(config.get("aspect_ratio_threshold", 1.3))
+                duration_threshold = float(config.get("duration_threshold", 2))
+                for track in tracks:
+                    if track.get("aspect_ratio", 0) >= ratio_threshold:
+                        key = f"{rule_id}:fall:{track['id']}"
+                        alive_active_keys.add(key)
+                        duration = now - self.active_since.get(key, now)
+                        if self._duration_ready(key, now, duration_threshold) and self._can_emit(key, now, cooldown):
+                            events.append(self._build_event(rule, now, 1, track, 0.78, max(duration, duration_threshold)))
+
+        stale_keys = [key for key in self.active_since if key not in alive_active_keys]
+        for key in stale_keys:
+            self.active_since.pop(key, None)
+
+        return events
+
+def draw_rule_overlay(frame, rules):
+    for rule in rules:
+        if not rule.get("enabled", True):
+            continue
+        config = rule.get("config") or {}
+        if rule.get("rule_type") in ("intrusion", "crowding", "loitering"):
+            region = config.get("region")
+            if region:
+                pts = [(int(x), int(y)) for x, y in region]
+                color = (0, 165, 255) if rule.get("rule_type") != "intrusion" else (0, 0, 255)
+                for idx in range(len(pts)):
+                    cv2.line(frame, pts[idx], pts[(idx + 1) % len(pts)], color, 2)
+        elif rule.get("rule_type") == "line_crossing":
+            line = config.get("line")
+            if line and len(line) == 2:
+                cv2.line(frame, tuple(map(int, line[0])), tuple(map(int, line[1])), (255, 0, 0), 2)
+
+def report_risk_event(event, frame, boxes):
+    current_time = time.time()
+    img_filename = f"event_{event['event_type']}_{event['cam_name']}_{int(current_time)}.jpg"
+    img_path = os.path.join(SNAPSHOT_DIR, img_filename)
+
+    snap_frame = frame.copy()
+    for (x1, y1, x2, y2) in boxes:
+        cv2.rectangle(snap_frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
+    cv2.putText(snap_frame, event["event_name"], (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2, cv2.LINE_AA)
+    cv2.imwrite(img_path, snap_frame)
+
+    payload = {
+        "camera_id": event["camera_id"],
+        "cam_name": event["cam_name"],
+        "alert_type": f"{event['event_name']} (风险等级: {event['risk_level']}, 人数: {event['person_count']})",
+        "image_filename": img_filename,
+        "event_type": event["event_type"],
+        "event_name": event["event_name"],
+        "risk_level": event["risk_level"],
+        "confidence": event["confidence"],
+        "person_count": event["person_count"],
+        "region_name": event.get("region_name"),
+        "event_start_time": event.get("event_start_time"),
+        "duration_seconds": event.get("duration_seconds", 0)
+    }
+
+    try:
+        requests.post(f"{API_BASE_URL}/api/alerts", json=payload, headers=get_auth_headers(), timeout=2)
+        logger.info(f"🚨 [{event['cam_name']}] 上报风险事件: {event['event_name']}")
+    except Exception as e:
+        logger.info(f"⚠️ [{event['cam_name']}] 风险事件上报失败: {e}")
 
 # ================= 🚨 新增：遗留文件自愈修复模块 =================
 def fix_leftover_recording_files():
@@ -99,7 +437,7 @@ def fix_leftover_recording_files():
 def report_status(cam_id, status):
     try:
         # 🚨 加上 headers=get_auth_headers()
-        requests.put(f"http://127.0.0.1:8000/api/cameras/{cam_id}/status", 
+        requests.put(f"{API_BASE_URL}/api/cameras/{cam_id}/status", 
                      json={"status": status}, headers=get_auth_headers(), timeout=2)
     except Exception:
         pass 
@@ -165,10 +503,12 @@ def process_video_stream(cam_id, cam_name, input_source, output_rtsp, stop_event
         process = subprocess.Popen(command, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
         logger.info(f"🚀 [{cam_name}] 性能突破版推流已启动")
 
-        last_alert_time = last_person_time = 0 
-        event_ongoing = False 
-        max_person_count, frame_count = 0, 0
+        frame_count = 0
         last_boxes = [] # 用于帧复用机制的检测框缓存
+        last_tracks = []
+        last_events = []
+        tracker = CentroidTracker()
+        event_engine = EventEngine(cam_id, cam_name)
 
         while cap.isOpened() and not stop_event.is_set():
             ret, frame = cap.read()
@@ -190,42 +530,24 @@ def process_video_stream(cam_id, cam_name, input_source, output_rtsp, stop_event
                             x1, y1, x2, y2 = map(int, box.xyxy[0])
                             new_boxes.append((x1, y1, x2, y2))
                 last_boxes = new_boxes
-            
-            person_count = len(last_boxes)
-            
-            # --- 报警逻辑 ---
-            if person_count > 0:
-                last_person_time = current_time 
-                if not event_ongoing or person_count > max_person_count:
-                    event_ongoing = True 
-                    if current_time - last_alert_time > 8:
-                        last_alert_time = current_time
-                        max_person_count = person_count 
-                        
-                        img_filename = f"alert_{cam_name}_{int(current_time)}.jpg"
-                        img_path = os.path.join(SNAPSHOT_DIR, img_filename)
-                        
-                        snap_frame = frame.copy()
-                        for (x1, y1, x2, y2) in last_boxes:
-                            cv2.rectangle(snap_frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
-                        cv2.imwrite(img_path, snap_frame)
-                        
-                        try:
-                            # 此处为了不阻塞后续操作，可以直接忽略超时的警告
-                            requests.post("http://127.0.0.1:8000/api/alerts", json={
-                                "cam_name": cam_name,
-                                "alert_type": f"检测到异常闯入 (当前共有 {person_count} 人)",
-                                "image_filename": img_filename
-                            }, headers={"Authorization": f"Bearer {API_TOKEN}"}, timeout=2)
-                        except Exception: pass
-            else:
-                if event_ongoing and (current_time - last_person_time > 5):
-                    event_ongoing, max_person_count = False, 0 
+                last_tracks = tracker.update(last_boxes, current_time)
+
+            risk_events = event_engine.evaluate(last_tracks, frame.shape, current_time)
+            if risk_events:
+                last_events = risk_events
+                for event in risk_events:
+                    report_risk_event(event, frame, last_boxes)
 
             # ====== 视觉渲染（无论是否推断，都直接渲染历史缓存框）======
             annotated_frame = frame
-            for (x1, y1, x2, y2) in last_boxes:
+            draw_rule_overlay(annotated_frame, event_engine.rules)
+            for track in last_tracks:
+                x1, y1, x2, y2 = track["bbox"]
                 cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                cv2.putText(annotated_frame, f"ID {track['id']}", (x1, max(20, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2, cv2.LINE_AA)
+
+            for idx, event in enumerate(last_events[-3:]):
+                cv2.putText(annotated_frame, event["event_name"], (30, 85 + idx * 32), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2, cv2.LINE_AA)
 
             frame_h, frame_w = annotated_frame.shape[:2]
             scale_ratio = max(0.4, frame_w / 1920.0) 
@@ -362,7 +684,7 @@ def cleanup_old_records():
 def get_cameras_from_api():
     try:
         # 🚨 加上 headers=get_auth_headers()
-        res = requests.get('http://127.0.0.1:8000/api/cameras', headers=get_auth_headers(), timeout=2)
+        res = requests.get(f"{API_BASE_URL}/api/cameras", headers=get_auth_headers(), timeout=2)
         if res.status_code == 200:
             return res.json()
         elif res.status_code == 401:
@@ -435,12 +757,12 @@ if __name__ == '__main__':
 
     except KeyboardInterrupt:
         logger.info("\n⚠️ 收到退出信号，正在快速强杀所有连线...")
-        for cam_id, (t_main, t_rec, stop_event, _) in active_threads.items():
+        for cam_id, (t_main, t_rec, stop_event, _, _) in active_threads.items():
             report_status(cam_id, "offline")
             stop_event.set()
         
         # 仅等待最多 1 秒，若仍卡死则暴力退出结束，系统会自动回收 FFmpeg 进程
-        for cam_id, (t_main, t_rec, stop_event, _) in active_threads.items():
+        for cam_id, (t_main, t_rec, stop_event, _, _) in active_threads.items():
             t_main.join(timeout=1.0)
             t_rec.join(timeout=1.0)
             

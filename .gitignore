@@ -11,3 +11,8 @@ dist-ssr/
 *.pt
 mediamtx_v1.17.1_windows_amd64/
 logs/
+__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example

@@ -1,5 +1,6 @@
 import os
 import time
+import json
 import pymysql
 from pymysql.cursors import DictCursor
 from dbutils.pooled_db import PooledDB
@@ -8,12 +9,35 @@ from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from passlib.context import CryptContext
 from jose import JWTError, jwt
 from datetime import datetime, timedelta
 import uvicorn
-from typing import List
+from typing import Any, Dict, List, Optional
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_DIR = os.path.dirname(BASE_DIR)
+
+def load_env_file(path):
+    if not os.path.exists(path):
+        return
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+load_env_file(os.path.join(PROJECT_DIR, ".env"))
+load_env_file(os.path.join(BASE_DIR, ".env"))
+
+def env_int(key, default):
+    try:
+        return int(os.getenv(key, default))
+    except (TypeError, ValueError):
+        return default
 
 # 配置企业级日志系统
 logger.add("logs/api_server_{time:%Y-%m-%d}.log", rotation="50 MB", retention="10 days", level="INFO")
@@ -21,33 +45,35 @@ logger.info("================ API Server Starting ================")
 
 # ================= 配置区 =================
 DB_CONFIG = {
-    'host': '127.0.0.1',
-    'port': 3306,
-    'user': 'root',
-    'password': '123456',  # 你的数据库密码
+    'host': os.getenv('MYSQL_HOST', '127.0.0.1'),
+    'port': env_int('MYSQL_PORT', 3306),
+    'user': os.getenv('MYSQL_USER', 'root'),
+    'password': os.getenv('MYSQL_PASSWORD', '123456'),
     'charset': 'utf8mb4',
     'cursorclass': DictCursor,
     'autocommit': True
 }
-DB_NAME = 'monitor_db'
+DB_NAME = os.getenv('MYSQL_DATABASE', 'monitor_db')
 
-# 🚨 每次服务端重启强制刷新 Token 密钥，使得所有过去下发的会话立即过期，要求前端重新登录
-import secrets
-SECRET_KEY = secrets.token_hex(32)
+SECRET_KEY = os.getenv('JWT_SECRET_KEY', 'monitor-app-dev-secret-key-change-me')
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 # Token 过期时间: 1天
+ACCESS_TOKEN_EXPIRE_MINUTES = env_int('JWT_EXPIRE_MINUTES', 60 * 24)
+DEFAULT_ADMIN_USERNAME = os.getenv('DEFAULT_ADMIN_USERNAME', 'admin')
+DEFAULT_ADMIN_PASSWORD = os.getenv('DEFAULT_ADMIN_PASSWORD', 'admin123456')
+AI_WORKER_USERNAME = os.getenv('AI_WORKER_USERNAME', 'ai_worker')
+AI_WORKER_PASSWORD = os.getenv('AI_WORKER_PASSWORD', 'ai_pass666')
+CORS_ORIGINS = os.getenv('CORS_ORIGINS', '*')
 # ==========================================
 
-app = FastAPI()
+app = FastAPI(title=os.getenv('APP_NAME', 'monitor-system'))
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"] if CORS_ORIGINS == "*" else [origin.strip() for origin in CORS_ORIGINS.split(",") if origin.strip()],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SNAPSHOT_DIR = os.path.join(BASE_DIR, 'snapshots')
 os.makedirs(SNAPSHOT_DIR, exist_ok=True)
 # 原有的 snapshots
@@ -114,6 +140,44 @@ def init_db():
     with conn.cursor() as cursor:
         cursor.execute('''CREATE TABLE IF NOT EXISTS cameras (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(255) NOT NULL, model VARCHAR(255), input_source VARCHAR(255) NOT NULL, stream_path VARCHAR(255) NOT NULL, status VARCHAR(50) DEFAULT 'offline')''')
         cursor.execute('''CREATE TABLE IF NOT EXISTS alerts (id INT AUTO_INCREMENT PRIMARY KEY, cam_name VARCHAR(255) NOT NULL, alert_type VARCHAR(255) NOT NULL, image_filename VARCHAR(255) NOT NULL, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS camera_rules (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                camera_id INT NOT NULL,
+                rule_type VARCHAR(50) NOT NULL,
+                enabled TINYINT(1) DEFAULT 1,
+                rule_name VARCHAR(100) NOT NULL,
+                risk_level VARCHAR(20) DEFAULT 'medium',
+                config_json TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                INDEX idx_camera_rules_camera_id (camera_id),
+                INDEX idx_camera_rules_type (rule_type)
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS alert_events (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                camera_id INT,
+                cam_name VARCHAR(255) NOT NULL,
+                event_type VARCHAR(50) NOT NULL,
+                event_name VARCHAR(100) NOT NULL,
+                risk_level VARCHAR(20) DEFAULT 'medium',
+                confidence FLOAT DEFAULT 0,
+                person_count INT DEFAULT 0,
+                image_filename VARCHAR(255) NOT NULL,
+                region_name VARCHAR(100),
+                event_start_time DATETIME,
+                event_end_time DATETIME,
+                duration_seconds FLOAT DEFAULT 0,
+                status VARCHAR(20) DEFAULT 'new',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_alert_events_camera_id (camera_id),
+                INDEX idx_alert_events_type (event_type),
+                INDEX idx_alert_events_status (status),
+                INDEX idx_alert_events_created_at (created_at)
+            )
+        ''')
         
         # 🚨 新增：企业用户表
         cursor.execute('''
@@ -124,6 +188,19 @@ def init_db():
                 role VARCHAR(20) NOT NULL
             )
         ''')
+
+        default_users = [
+            (DEFAULT_ADMIN_USERNAME, DEFAULT_ADMIN_PASSWORD, 'admin'),
+            (AI_WORKER_USERNAME, AI_WORKER_PASSWORD, 'ai_worker')
+        ]
+        for username, password, role in default_users:
+            cursor.execute("SELECT id FROM users WHERE username = %s", (username,))
+            if not cursor.fetchone():
+                cursor.execute(
+                    "INSERT INTO users (username, password_hash, role) VALUES (%s, %s, %s)",
+                    (username, get_password_hash(password), role)
+                )
+                logger.info(f"Default user initialized: {username} ({role})")
 
     conn.close()
 
@@ -177,10 +254,30 @@ class Alert(BaseModel):
     cam_name: str
     alert_type: str
     image_filename: str
+    camera_id: Optional[int] = None
+    event_type: Optional[str] = None
+    event_name: Optional[str] = None
+    risk_level: Optional[str] = "medium"
+    confidence: Optional[float] = 0
+    person_count: Optional[int] = 0
+    region_name: Optional[str] = None
+    event_start_time: Optional[datetime] = None
+    event_end_time: Optional[datetime] = None
+    duration_seconds: Optional[float] = 0
 
 class ChangePasswordRequest(BaseModel):
     old_password: str
     new_password: str
+
+class CameraRule(BaseModel):
+    rule_type: str
+    enabled: bool = True
+    rule_name: str = ""
+    risk_level: str = "medium"
+    config: Dict[str, Any] = Field(default_factory=dict)
+
+class EventStatusUpdate(BaseModel):
+    status: str
 
 # 🚨 以下所有业务接口，全部加入 `current_user: dict = Depends(get_current_user)` 进行拦截保护
 
@@ -251,6 +348,214 @@ def update_camera_status(cam_id: int, stat: CameraStatus, current_user: dict = D
     conn = get_db(); cursor = conn.cursor(); cursor.execute("UPDATE cameras SET status=%s WHERE id=%s", (stat.status, cam_id)); conn.commit(); conn.close()
     return {"status": "success"}
 
+@app.get("/api/health")
+def health_check():
+    db_status = "ok"
+    storage_status = "ok"
+    camera_count = 0
+    online_camera_count = 0
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) AS total, SUM(status = 'online') AS online_count FROM cameras")
+        row = cursor.fetchone()
+        camera_count = row["total"] or 0
+        online_camera_count = row["online_count"] or 0
+        conn.close()
+    except Exception as e:
+        db_status = f"error: {e}"
+
+    for path in (SNAPSHOT_DIR, RECORD_DIR):
+        if not os.path.exists(path) or not os.access(path, os.W_OK):
+            storage_status = "error"
+
+    return {
+        "status": "ok" if db_status == "ok" and storage_status == "ok" else "degraded",
+        "database": db_status,
+        "storage": storage_status,
+        "camera_count": camera_count,
+        "online_camera_count": online_camera_count,
+        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    }
+
+@app.get("/api/metrics/summary")
+def metrics_summary(current_user: dict = Depends(get_current_user)):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) AS total, SUM(status = 'online') AS online_count FROM cameras")
+    cameras = cursor.fetchone()
+    cursor.execute("SELECT COUNT(*) AS total FROM alert_events WHERE DATE(created_at) = CURDATE()")
+    today_events = cursor.fetchone()["total"]
+    cursor.execute("SELECT COUNT(*) AS total FROM camera_rules WHERE enabled = 1")
+    active_rules = cursor.fetchone()["total"]
+    conn.close()
+    return {
+        "camera_count": cameras["total"] or 0,
+        "online_camera_count": cameras["online_count"] or 0,
+        "today_events": today_events or 0,
+        "active_rules": active_rules or 0
+    }
+
+def normalize_rule(row):
+    if not row:
+        return row
+    try:
+        config = json.loads(row.get("config_json") or "{}")
+    except Exception:
+        config = {}
+    row["enabled"] = bool(row.get("enabled"))
+    row["config"] = config
+    row.pop("config_json", None)
+    for field in ("created_at", "updated_at"):
+        if row.get(field):
+            row[field] = row[field].strftime("%Y-%m-%d %H:%M:%S")
+    return row
+
+@app.get("/api/cameras/{cam_id}/rules")
+def get_camera_rules(cam_id: int, current_user: dict = Depends(get_current_user)):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM camera_rules WHERE camera_id = %s ORDER BY id DESC", (cam_id,))
+    rules = [normalize_rule(rule) for rule in cursor.fetchall()]
+    conn.close()
+    return rules
+
+@app.post("/api/cameras/{cam_id}/rules")
+def add_camera_rule(cam_id: int, rule: CameraRule, current_user: dict = Depends(get_current_user)):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM cameras WHERE id = %s", (cam_id,))
+    if not cursor.fetchone():
+        conn.close()
+        raise HTTPException(status_code=404, detail="摄像头不存在")
+
+    rule_name = rule.rule_name.strip() if rule.rule_name.strip() else rule.rule_type
+    cursor.execute(
+        """
+        INSERT INTO camera_rules (camera_id, rule_type, enabled, rule_name, risk_level, config_json)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        """,
+        (cam_id, rule.rule_type, int(rule.enabled), rule_name, rule.risk_level, json.dumps(rule.config, ensure_ascii=False))
+    )
+    conn.commit()
+    rule_id = cursor.lastrowid
+    conn.close()
+    return {"status": "success", "id": rule_id}
+
+@app.put("/api/rules/{rule_id}")
+def update_camera_rule(rule_id: int, rule: CameraRule, current_user: dict = Depends(get_current_user)):
+    conn = get_db()
+    cursor = conn.cursor()
+    rule_name = rule.rule_name.strip() if rule.rule_name.strip() else rule.rule_type
+    cursor.execute(
+        """
+        UPDATE camera_rules
+        SET rule_type=%s, enabled=%s, rule_name=%s, risk_level=%s, config_json=%s
+        WHERE id=%s
+        """,
+        (rule.rule_type, int(rule.enabled), rule_name, rule.risk_level, json.dumps(rule.config, ensure_ascii=False), rule_id)
+    )
+    conn.commit()
+    updated = cursor.rowcount
+    conn.close()
+    if not updated:
+        raise HTTPException(status_code=404, detail="规则不存在")
+    return {"status": "success"}
+
+@app.delete("/api/rules/{rule_id}")
+def delete_camera_rule(rule_id: int, current_user: dict = Depends(get_current_user)):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM camera_rules WHERE id = %s", (rule_id,))
+    conn.commit()
+    deleted = cursor.rowcount
+    conn.close()
+    if not deleted:
+        raise HTTPException(status_code=404, detail="规则不存在")
+    return {"status": "success"}
+
+@app.get("/api/events/stats")
+def get_event_stats(current_user: dict = Depends(get_current_user)):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) AS total_events FROM alert_events")
+    total = cursor.fetchone()["total_events"]
+    cursor.execute("SELECT COUNT(*) AS today_events FROM alert_events WHERE DATE(created_at) = CURDATE()")
+    today = cursor.fetchone()["today_events"]
+    cursor.execute("SELECT risk_level, COUNT(*) AS count FROM alert_events GROUP BY risk_level")
+    risk_counts = {row["risk_level"]: row["count"] for row in cursor.fetchall()}
+    cursor.execute("SELECT event_type, COUNT(*) AS count FROM alert_events GROUP BY event_type ORDER BY count DESC LIMIT 10")
+    top_event_types = cursor.fetchall()
+    conn.close()
+    return {
+        "total_events": total,
+        "today_events": today,
+        "critical_events": risk_counts.get("critical", 0),
+        "high_events": risk_counts.get("high", 0),
+        "risk_counts": risk_counts,
+        "top_event_types": top_event_types
+    }
+
+@app.get("/api/events")
+def get_events(
+    camera_id: Optional[int] = None,
+    event_type: Optional[str] = None,
+    risk_level: Optional[str] = None,
+    status_filter: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 20,
+    current_user: dict = Depends(get_current_user)
+):
+    page = max(page, 1)
+    page_size = max(1, min(page_size, 100))
+    conditions = []
+    params = []
+    if camera_id:
+        conditions.append("camera_id = %s")
+        params.append(camera_id)
+    if event_type:
+        conditions.append("event_type = %s")
+        params.append(event_type)
+    if risk_level:
+        conditions.append("risk_level = %s")
+        params.append(risk_level)
+    if status_filter:
+        conditions.append("status = %s")
+        params.append(status_filter)
+
+    where_sql = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+    offset = (page - 1) * page_size
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute(f"SELECT COUNT(*) AS total FROM alert_events{where_sql}", tuple(params))
+    total = cursor.fetchone()["total"]
+    cursor.execute(
+        f"SELECT * FROM alert_events{where_sql} ORDER BY created_at DESC LIMIT %s OFFSET %s",
+        tuple(params + [page_size, offset])
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    for row in rows:
+        for field in ("event_start_time", "event_end_time", "created_at"):
+            if row.get(field):
+                row[field] = row[field].strftime("%Y-%m-%d %H:%M:%S")
+    return {"total": total, "page": page, "page_size": page_size, "items": rows}
+
+@app.put("/api/events/{event_id}/status")
+def update_event_status(event_id: int, req: EventStatusUpdate, current_user: dict = Depends(get_current_user)):
+    allowed_status = {"new", "confirmed", "ignored", "resolved"}
+    if req.status not in allowed_status:
+        raise HTTPException(status_code=400, detail="非法事件状态")
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE alert_events SET status=%s WHERE id=%s", (req.status, event_id))
+    conn.commit()
+    updated = cursor.rowcount
+    conn.close()
+    if not updated:
+        raise HTTPException(status_code=404, detail="事件不存在")
+    return {"status": "success"}
+
 
 from fastapi import Request
 
@@ -275,8 +580,47 @@ def get_camera_records(cam_id: int, request: Request, current_user: dict = Depen
 
 @app.post("/api/alerts")
 def add_alert(alert: Alert, current_user: dict = Depends(get_current_user)):
-    conn = get_db(); cursor = conn.cursor(); cursor.execute("INSERT INTO alerts (cam_name, alert_type, image_filename) VALUES (%s, %s, %s)", (alert.cam_name, alert.alert_type, alert.image_filename)); conn.commit(); conn.close()
-    return {"status": "success"}
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO alerts (cam_name, alert_type, image_filename) VALUES (%s, %s, %s)", (alert.cam_name, alert.alert_type, alert.image_filename))
+    alert_id = cursor.lastrowid
+
+    event_type = alert.event_type or "person_detected"
+    event_name = alert.event_name or alert.alert_type
+    camera_id = alert.camera_id
+    if camera_id is None:
+        cursor.execute("SELECT id FROM cameras WHERE name = %s LIMIT 1", (alert.cam_name,))
+        camera = cursor.fetchone()
+        camera_id = camera["id"] if camera else None
+
+    cursor.execute(
+        """
+        INSERT INTO alert_events (
+            camera_id, cam_name, event_type, event_name, risk_level, confidence,
+            person_count, image_filename, region_name, event_start_time,
+            event_end_time, duration_seconds
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """,
+        (
+            camera_id,
+            alert.cam_name,
+            event_type,
+            event_name,
+            alert.risk_level or "medium",
+            alert.confidence or 0,
+            alert.person_count or 0,
+            alert.image_filename,
+            alert.region_name,
+            alert.event_start_time,
+            alert.event_end_time,
+            alert.duration_seconds or 0
+        )
+    )
+    event_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return {"status": "success", "alert_id": alert_id, "event_id": event_id}
 
 @app.get("/api/alerts")
 def get_alerts(cam_name: str = None, current_user: dict = Depends(get_current_user)):

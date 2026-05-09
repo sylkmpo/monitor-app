@@ -31,7 +31,9 @@
             <td class="col-id">#{{ String(cam.id).padStart(4, '0') }}</td>
             <td class="col-name">
               <div class="device-name">
-                <div class="device-icon">📹</div>
+                <div class="device-icon">
+                  <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none"><rect x="3" y="5" width="14" height="14" rx="2"></rect><path d="M17 9l4-2v10l-4-2"></path></svg>
+                </div>
                 {{ cam.name }}
               </div>
             </td>
@@ -223,7 +225,7 @@ onUnmounted(() => {
 <style scoped>
 /* 页面级容器 */
 .manager-container {
-  padding: 30px 40px;
+  padding: 28px 32px;
   background-color: var(--bg-body);
   min-height: 100%;
 }
@@ -233,14 +235,14 @@ onUnmounted(() => {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 25px;
+  margin-bottom: 24px;
 }
 .header-title h2 {
   margin: 0 0 8px 0;
   font-size: 24px;
   color: var(--text-main);
-  font-weight: 600;
-  letter-spacing: 0.5px;
+  font-weight: 800;
+  letter-spacing: 0;
 }
 .subtitle {
   color: var(--text-muted);
@@ -258,15 +260,15 @@ onUnmounted(() => {
   padding: 10px 20px;
   border-radius: 6px;
   font-size: 14px;
-  font-weight: 500;
+  font-weight: 800;
   cursor: pointer;
   transition: all 0.2s ease;
-  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  box-shadow: none;
 }
 .btn-primary:hover:not(:disabled) {
-  filter: brightness(1.1);
+  filter: brightness(1.05);
   transform: translateY(-1px);
-  box-shadow: 0 6px 10px rgba(0, 0, 0, 0.15);
+  box-shadow: var(--shadow-soft);
 }
 .btn-primary:disabled {
   opacity: 0.5;
@@ -291,9 +293,9 @@ onUnmounted(() => {
 /* 表格卡片卡槽 */
 .table-card {
   background: var(--bg-card);
-  border-radius: 12px;
+  border-radius: 8px;
   border: 1px solid var(--border-color);
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-soft);
   overflow: hidden;
 }
 
@@ -305,16 +307,16 @@ onUnmounted(() => {
 }
 .enterprise-table th {
   background-color: var(--hover-bg);
-  padding: 16px 20px;
-  font-size: 13px;
-  font-weight: 600;
+  padding: 13px 16px;
+  font-size: 12px;
+  font-weight: 800;
   color: var(--text-sub);
   text-transform: uppercase;
-  letter-spacing: 0.5px;
-  border-bottom: 2px solid var(--border-color);
+  letter-spacing: 0.04em;
+  border-bottom: 1px solid var(--border-color);
 }
 .enterprise-table td {
-  padding: 16px 20px;
+  padding: 14px 16px;
   font-size: 14px;
   color: var(--text-main);
   border-bottom: 1px solid var(--border-color);
@@ -361,9 +363,9 @@ onUnmounted(() => {
 
 /* 表格单元格定制 */
 .col-id { color: var(--text-muted); font-family: monospace; }
-.device-name { display: flex; align-items: center; gap: 10px; font-weight: 500; }
-.device-icon { background: var(--bg-body); padding: 6px; border-radius: 6px; border: 1px solid var(--border-color); font-size: 16px;}
-.badge { display: inline-block; padding: 4px 10px; background: var(--bg-body); border: 1px solid var(--border-color); border-radius: 20px; font-size: 12px; color: var(--text-sub); }
+.device-name { display: flex; align-items: center; gap: 10px; font-weight: 700; }
+.device-icon { background: var(--hover-bg); color: var(--text-sub); width: 30px; height: 30px; display: inline-flex; align-items: center; justify-content: center; border-radius: 6px; border: 1px solid var(--border-color); }
+.badge { display: inline-block; padding: 4px 10px; background: var(--hover-bg); border: 1px solid var(--border-color); border-radius: 999px; font-size: 12px; color: var(--text-sub); }
 .code-block { background: var(--bg-body); padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border-color); font-family: monospace; color: var(--primary); font-size: 13px;}
 .path-text { color: var(--text-sub); }
 
@@ -403,8 +405,8 @@ onUnmounted(() => {
   background: var(--bg-card);
   width: 500px;
   max-width: 90%;
-  border-radius: 12px;
-  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+  border-radius: 8px;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.22);
   border: 1px solid var(--border-color);
   animation: slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1);
   overflow: hidden;
@@ -419,7 +421,7 @@ onUnmounted(() => {
   align-items: center;
   background: var(--bg-body);
 }
-.modal-header h3 { margin: 0; font-size: 18px; color: var(--text-main); font-weight: 600; }
+.modal-header h3 { margin: 0; font-size: 18px; color: var(--text-main); font-weight: 800; }
 .close-btn { background: transparent; border: none; font-size: 24px; color: var(--text-muted); cursor: pointer; line-height: 1; transition: 0.2s; }
 .close-btn:hover { color: var(--danger); transform: scale(1.1); }
 

@@ -1,7 +1,10 @@
 <template>
   <div class="login-container">
     <div class="login-box">
-      <div class="logo">🛡️ 智能监控管理中台</div>
+      <div class="logo">
+        <span class="logo-mark">M</span>
+        <span>MonitorOps</span>
+      </div>
       <form @submit.prevent="handleLogin" class="login-form">
         <div class="input-group">
           <label>用户名</label>
@@ -59,14 +62,15 @@ const handleLogin = async () => {
 </script>
 
 <style scoped>
-.login-container { display: flex; justify-content: center; align-items: center; height: 100vh; background-color: var(--bg-body); width: 100vw; position: absolute; top: 0; left: 0; z-index: 9999; transition: 0.3s; }
-.login-box { background: var(--bg-card); padding: 40px; border-radius: 12px; box-shadow: var(--shadow); width: 100%; max-width: 400px; border: 1px solid var(--border-color); transition: 0.3s; }
-.logo { font-size: 22px; font-weight: bold; color: var(--text-main); text-align: center; margin-bottom: 30px; letter-spacing: 1px; }
+.login-container { display: flex; justify-content: center; align-items: center; height: 100vh; background: radial-gradient(circle at 30% 20%, rgba(37, 99, 235, 0.12), transparent 300px), var(--bg-body); width: 100vw; position: absolute; top: 0; left: 0; z-index: 9999; transition: 0.2s; }
+.login-box { background: var(--bg-card); padding: 36px; border-radius: 8px; box-shadow: var(--shadow); width: 100%; max-width: 400px; border: 1px solid var(--border-color); transition: 0.2s; }
+.logo { font-size: 22px; font-weight: 800; color: var(--text-main); display: flex; align-items: center; justify-content: center; gap: 10px; margin-bottom: 30px; letter-spacing: 0; }
+.logo-mark { width: 34px; height: 34px; border-radius: 8px; background: var(--primary); color: #fff; display: inline-flex; align-items: center; justify-content: center; font-size: 16px; }
 .input-group { margin-bottom: 20px; }
 .input-group label { display: block; color: var(--text-sub); margin-bottom: 8px; font-size: 14px; font-weight: 500; }
 .input-group input { width: 100%; padding: 12px; background: var(--bg-input); border: 1px solid var(--border-color); border-radius: 6px; color: var(--text-main); font-size: 16px; box-sizing: border-box; transition: 0.3s; }
 .input-group input:focus { border-color: var(--primary); outline: none; }
-.login-btn { width: 100%; padding: 14px; background: var(--primary); color: white; border: none; border-radius: 6px; font-size: 16px; font-weight: bold; cursor: pointer; transition: 0.3s; margin-top: 10px; }
+.login-btn { width: 100%; padding: 14px; background: var(--primary); color: white; border: none; border-radius: 6px; font-size: 15px; font-weight: 800; cursor: pointer; transition: 0.2s; margin-top: 10px; }
 .login-btn:hover { background: var(--primary-hover); }
 .error-msg { color: var(--danger); margin-top: 15px; text-align: center; font-size: 14px; background: rgba(239, 68, 68, 0.1); padding: 10px; border-radius: 6px; }
 </style>

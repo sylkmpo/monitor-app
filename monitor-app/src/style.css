@@ -1,43 +1,95 @@
-/* 默认浅色主题变量 */
 :root {
-  --bg-body: #f3f4f6;
-  --bg-sidebar: #ffffff;
+  --bg-body: #f6f7fb;
+  --bg-sidebar: #101827;
   --bg-card: #ffffff;
   --bg-input: #ffffff;
-  --text-main: #111827;
-  --text-sub: #4b5563;
-  --text-muted: #9ca3af;
-  --border-color: #e5e7eb;
-  --hover-bg: #f3f4f6;
-  --shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
-  
-  --primary: #3b82f6;
-  --primary-hover: #2563eb;
-  --success: #10b981;
-  --danger: #ef4444;
-  --warning: #f59e0b;
+  --bg-elevated: #ffffff;
+  --text-main: #172033;
+  --text-sub: #596579;
+  --text-muted: #8a94a6;
+  --border-color: #dfe4ec;
+  --hover-bg: #eef2f7;
+  --sidebar-text: #edf2f7;
+  --sidebar-muted: #94a3b8;
+  --sidebar-active: rgba(255, 255, 255, 0.1);
+  --shadow: 0 8px 24px rgba(16, 24, 39, 0.06);
+  --shadow-soft: 0 1px 2px rgba(16, 24, 39, 0.05);
+  --radius-card: 8px;
+  --radius-control: 6px;
+
+  --primary: #2563eb;
+  --primary-hover: #1d4ed8;
+  --primary-soft: rgba(37, 99, 235, 0.1);
+  --success: #059669;
+  --danger: #dc2626;
+  --warning: #d97706;
+  --info: #0891b2;
 }
 
-/* 当 html 标签带有 data-theme="dark" 时，强制覆盖为深色变量 */
 [data-theme="dark"] {
-  --bg-body: #0f1015;
-  --bg-sidebar: #1c1d26;
-  --bg-card: #1c1d26;
-  --bg-input: #0f1015;
-  --text-main: #ffffff;
-  --text-sub: #d1d5db;
-  --text-muted: #8a8d98;
-  --border-color: #2d2f3d;
-  --hover-bg: rgba(255, 255, 255, 0.05);
-  --shadow: 0 10px 25px rgba(0, 0, 0, 0.4);
+  --bg-body: #0d111a;
+  --bg-sidebar: #0a0f1a;
+  --bg-card: #151b28;
+  --bg-input: #101624;
+  --bg-elevated: #1a2232;
+  --text-main: #eef2f8;
+  --text-sub: #b8c2d2;
+  --text-muted: #7d8899;
+  --border-color: #2a3446;
+  --hover-bg: rgba(255, 255, 255, 0.06);
+  --sidebar-text: #f8fafc;
+  --sidebar-muted: #7d8899;
+  --sidebar-active: rgba(37, 99, 235, 0.22);
+  --shadow: 0 14px 30px rgba(0, 0, 0, 0.32);
+  --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.28);
 }
 
-/* 全局基础样式 */
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--bg-body);
+}
+
 body {
   margin: 0;
   padding: 0;
   background-color: var(--bg-body);
   color: var(--text-main);
-  font-family: 'Segoe UI', system-ui, sans-serif;
-  transition: background-color 0.3s, color 0.3s; /* 加入平滑过渡动画 */
+  font-family: Inter, "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  font-size: 14px;
+  letter-spacing: 0;
+  transition: background-color 0.2s, color 0.2s;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
+  letter-spacing: 0;
+}
+
+::selection {
+  background: var(--primary-soft);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.42);
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
 }
