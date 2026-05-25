@@ -97,7 +97,7 @@
               <button class="icon-btn" @click="openImagePreview(event.image_filename)" title="查看抓拍">
                 查看
               </button>
-              <select class="status-select" :value="event.status" @change="updateStatus(event, $event.target.value)">
+              <select class="status-select" :value="event.status" :disabled="!canHandleEvents" @change="updateStatus(event, $event.target.value)">
                 <option value="new">待处理</option>
                 <option value="confirmed">已确认</option>
                 <option value="ignored">已忽略</option>
@@ -133,10 +133,12 @@
 </template>
 
 <script setup>
-import { onMounted, ref } from 'vue';
+import { onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed } from 'vue';
 import axios from 'axios';
 
 const API_BASE = `http://${window.location.hostname}:8000/api`;
+const WS_BASE = `ws://${window.location.hostname}:8000/ws/events`;
 const hostUrl = window.location.hostname;
 
 const cameras = ref([]);
@@ -146,6 +148,10 @@ const total = ref(0);
 const page = ref(1);
 const pageSize = ref(20);
 const previewImageUrl = ref(null);
+const wsStatus = ref('idle');
+let eventSocket = null;
+const currentRole = computed(() => sessionStorage.getItem('role') || 'viewer');
+const canHandleEvents = computed(() => ['admin', 'operator'].includes(currentRole.value));
 
 const filters = ref({
   camera_id: 0,
@@ -192,6 +198,34 @@ const refreshAll = async () => {
   await Promise.all([fetchCameras(), fetchStats(), fetchEvents()]);
 };
 
+const connectEventStream = () => {
+  if (eventSocket) {
+    eventSocket.close();
+  }
+
+  eventSocket = new WebSocket(WS_BASE);
+  eventSocket.onopen = () => {
+    wsStatus.value = 'connected';
+  };
+  eventSocket.onmessage = async (message) => {
+    try {
+      const payload = JSON.parse(message.data);
+      if (payload.type === 'risk_event_created') {
+        page.value = 1;
+        await Promise.all([fetchStats(), fetchEvents()]);
+      }
+    } catch (error) {
+      console.warn('Invalid event stream payload', error);
+    }
+  };
+  eventSocket.onclose = () => {
+    wsStatus.value = 'disconnected';
+  };
+  eventSocket.onerror = () => {
+    wsStatus.value = 'error';
+  };
+};
+
 const changePage = async (nextPage) => {
   page.value = nextPage;
   await fetchEvents();
@@ -216,7 +250,16 @@ const riskLabel = (level) => ({ low: '低', medium: '中', high: '高', critical
 const statusLabel = (status) => ({ new: '待处理', confirmed: '已确认', ignored: '已忽略', resolved: '已解决' }[status] || status);
 const formatConfidence = (value) => `${Math.round((Number(value) || 0) * 100)}%`;
 
-onMounted(refreshAll);
+onMounted(async () => {
+  await refreshAll();
+  connectEventStream();
+});
+
+onBeforeUnmount(() => {
+  if (eventSocket) {
+    eventSocket.close();
+  }
+});
 </script>
 
 <style scoped>
@@ -309,6 +352,11 @@ onMounted(refreshAll);
   color: var(--text-main);
   padding: 9px 10px;
   outline: none;
+}
+
+.status-select:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
 }
 
 .table-panel {

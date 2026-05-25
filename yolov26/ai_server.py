@@ -16,27 +16,11 @@ import datetime
 import sys
 from loguru import logger
 from ultralytics import YOLO
+from settings import BASE_DIR, settings
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_DIR = os.path.dirname(BASE_DIR)
-
-def load_env_file(path):
-    if not os.path.exists(path):
-        return
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, value = line.split("=", 1)
-            os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
-
-load_env_file(os.path.join(PROJECT_DIR, ".env"))
-load_env_file(os.path.join(BASE_DIR, ".env"))
-
-API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000")
-AI_WORKER_USERNAME = os.getenv("AI_WORKER_USERNAME", "ai_worker")
-AI_WORKER_PASSWORD = os.getenv("AI_WORKER_PASSWORD", "ai_pass666")
+API_BASE_URL = settings.API_BASE_URL
+AI_WORKER_USERNAME = settings.AI_WORKER_USERNAME
+AI_WORKER_PASSWORD = settings.AI_WORKER_PASSWORD
 
 # 配置企业级日志系统
 logger.add("logs/ai_server_{time:%Y-%m-%d}.log", rotation="50 MB", retention="10 days", level="INFO")

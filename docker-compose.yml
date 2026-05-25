@@ -1,0 +1,91 @@
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: monitor-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-123456}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-monitor_db}
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${MYSQL_ROOT_PASSWORD:-123456}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  mediamtx:
+    image: bluenviron/mediamtx:latest
+    container_name: monitor-mediamtx
+    restart: unless-stopped
+    ports:
+      - "8554:8554"
+      - "8888:8888"
+      - "8889:8889"
+      - "1935:1935"
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: monitor-backend
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      APP_ENV: docker
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_USER: root
+      MYSQL_PASSWORD: ${MYSQL_ROOT_PASSWORD:-123456}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-monitor_db}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-monitor-app-change-me-in-production}
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+      DEFAULT_ADMIN_USERNAME: ${DEFAULT_ADMIN_USERNAME:-admin}
+      DEFAULT_ADMIN_PASSWORD: ${DEFAULT_ADMIN_PASSWORD:-admin123456}
+      AI_WORKER_USERNAME: ${AI_WORKER_USERNAME:-ai_worker}
+      AI_WORKER_PASSWORD: ${AI_WORKER_PASSWORD:-ai_pass666}
+      API_BASE_URL: http://backend:8000
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./yolov26/snapshots:/app/yolov26/snapshots
+      - ./yolov26/records:/app/yolov26/records
+
+  frontend:
+    build:
+      context: ./monitor-app
+      dockerfile: Dockerfile
+    container_name: monitor-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "8080:80"
+
+  ai-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: monitor-ai-worker
+    profiles:
+      - ai
+    depends_on:
+      - backend
+      - mediamtx
+    environment:
+      APP_ENV: docker
+      API_BASE_URL: http://backend:8000
+      AI_WORKER_USERNAME: ${AI_WORKER_USERNAME:-ai_worker}
+      AI_WORKER_PASSWORD: ${AI_WORKER_PASSWORD:-ai_pass666}
+    volumes:
+      - ./yolov26/snapshots:/app/yolov26/snapshots
+      - ./yolov26/records:/app/yolov26/records
+      - ./yolov26/yolo26n.pt:/app/yolov26/yolo26n.pt
+    command: ["python", "ai_server.py"]
+
+volumes:
+  mysql_data:

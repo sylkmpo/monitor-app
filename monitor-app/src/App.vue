@@ -18,7 +18,7 @@
       <div class="user-info">
         <div class="avatar">{{ currentInitial }}</div>
         <div>
-          <div class="user-label">当前账号</div>
+          <div class="user-label">当前账号 / {{ currentRoleLabel }}</div>
           <div class="name">{{ currentUsername }}</div>
         </div>
       </div>
@@ -31,11 +31,11 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 2h4l1 4 3 2 4-1 2 4-3 3v4l3 3-2 4-4-1-3 2-1 4h-4l-1-4-3-2-4 1-2-4 3-3v-4L0 11l2-4 4 1 3-2 1-4z" transform="scale(.75) translate(4 1)"></path><path d="M12 8v5M12 16h.01"></path></svg>
           <span>告警中心</span>
         </router-link>
-        <router-link to="/rules" class="nav-btn">
+        <router-link v-if="canOperate" to="/rules" class="nav-btn">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16M4 12h10M4 19h7"></path><path d="M17 14l3 3-3 3"></path></svg>
           <span>风险规则</span>
         </router-link>
-        <router-link to="/settings" class="nav-btn">
+        <router-link v-if="canOperate" to="/settings" class="nav-btn">
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"></rect><path d="M7 9h10M7 13h6"></path></svg>
           <span>设备管理</span>
         </router-link>
@@ -68,6 +68,14 @@ const router = useRouter();
 const isLoginPage = computed(() => route.path === '/login');
 const currentUsername = computed(() => sessionStorage.getItem('username') || '管理员');
 const currentInitial = computed(() => currentUsername.value.slice(0, 1).toUpperCase());
+const currentRole = computed(() => sessionStorage.getItem('role') || 'viewer');
+const currentRoleLabel = computed(() => ({
+  admin: '管理员',
+  operator: '运维',
+  viewer: '只读',
+  ai_worker: 'AI 服务'
+}[currentRole.value] || currentRole.value));
+const canOperate = computed(() => ['admin', 'operator'].includes(currentRole.value));
 
 // ======= 🚨 主题切换逻辑 =======
 // 从本地存储读取历史偏好，默认深色

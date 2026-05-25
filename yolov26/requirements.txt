@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+pymysql
+DBUtils
+loguru
+python-jose[cryptography]
+passlib[bcrypt]
+requests
+opencv-python-headless
+ultralytics
